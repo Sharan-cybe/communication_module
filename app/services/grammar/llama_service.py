@@ -9,13 +9,31 @@ client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 def evaluate_grammar(text):
     prompt = f"""
-Evaluate grammar:
-0 = bad, 1 = ok, 2 = excellent
+You are an English speaking evaluator.
 
-Text: {text}
+Evaluate the grammar quality of the candidate.
 
-Return JSON:
-{{"score": number}}
+Text:
+{text}
+
+Consider:
+- sentence correctness
+- article usage
+- tense
+- phrasing
+
+Scoring:
+0 = poor (many errors)
+1 = average (some mistakes)
+2 = excellent (no mistakes)
+
+Also give 2–3 examples of mistakes.
+
+Return STRICT JSON:
+{{
+  "score": number,
+  "mistakes": ["...","..."]
+}}
 """
 
     response = client.chat.completions.create(
@@ -27,6 +45,6 @@ Return JSON:
 
     try:
         data = json.loads(content)
-        return {"score": int(data.get("score", 1))}
+        return {"score": int(data.get("score", 1)), "mistakes": data.get("mistakes", [])}
     except:
-        return {"score": 1}
+        return {"score": 1, "mistakes": ["Failed to evaluate grammar"]}
