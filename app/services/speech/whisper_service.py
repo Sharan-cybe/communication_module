@@ -1,15 +1,13 @@
 from groq import Groq
-from openai import OpenAI
 import tempfile
 import os
-import time
 from dotenv import load_dotenv
 
 load_dotenv()
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 
-def transcribe_audio(audio_file):
+def transcribe_audio(audio_file) -> dict:
     temp_file_path = None
 
     try:
@@ -27,25 +25,30 @@ def transcribe_audio(audio_file):
             response = client.audio.transcriptions.create(
                 file=f,
                 model="whisper-large-v3",
-                response_format="verbose_json"
+                response_format="verbose_json",
+                # ── word_timestamps gives per-word probabilities ──────────────
+                # This feeds Signal 3 (articulation consistency) in Option B.
+                # Groq supports this on whisper-large-v3.
+                timestamp_granularities=["segment", "word"],
             )
 
         print("Whisper response:", response)
 
         text = response.text
-
-        # timestamps (may or may not exist)
         response_dict = response.model_dump()
-        timestamps = response_dict.get("segments", [])
+
+        segments   = response_dict.get("segments", [])
+        words      = response_dict.get("words", [])     # per-word data
 
         return {
-            "text": text,
-            "timestamps": timestamps
+            "text":       text,
+            "timestamps": segments,   # segment-level (used by fluency + tone)
+            "words":      words,      # word-level    (used by pronunciation)
         }
 
     except Exception as e:
         print("WHISPER ERROR:", e)
-        return {"text": "", "timestamps": []}
+        return {"text": "", "timestamps": [], "words": []}
 
     finally:
         if temp_file_path and os.path.exists(temp_file_path):

@@ -4,161 +4,102 @@ import tempfile
 import os
 import re
 
-# ─── Filler words common in Indian English ────────────────────────────────────
-# Indian candidates often use "basically", "actually", "only" as fillers
 FILLER_WORDS = {
-    "um", "uh", "hmm", "er", "ah",             # universal
-    "like", "you know", "so",                   # casual fillers
-    "basically", "actually", "only", "itself",  # Indian-English specific
-    "na", "no", "right",                        # tag-question fillers
+    "um", "uh", "hmm", "er", "ah",
+    "like", "you know", "so",
+    "basically", "actually", "only", "itself",
+    "na", "no", "right",
 }
 
 
-def _count_fillers(transcript: str) -> dict:
-    """Count filler words/phrases in the transcript."""
+def _count_fillers(transcript: str) -> int:
     lower = transcript.lower()
-    counts = {}
     total = 0
     for filler in FILLER_WORDS:
-        # word boundary match
-        pattern = r'\b' + re.escape(filler) + r'\b'
-        matches = re.findall(pattern, lower)
-        if matches:
-            counts[filler] = len(matches)
-            total += len(matches)
-    return {"total": total, "breakdown": counts}
+        total += len(re.findall(r'\b' + re.escape(filler) + r'\b', lower))
+    return total
 
 
 def _analyze_pauses(timestamps: list) -> dict:
-    """
-    Detect pauses from Whisper word-level timestamps.
-    A pause is a gap between consecutive words > 0.5s.
-    Returns stats on pause count, total pause time, avg pause duration.
-    """
     if not timestamps or len(timestamps) < 2:
-        return {"pause_count": 0, "total_pause_time": 0.0, "avg_pause": 0.0, "long_pauses": 0}
-
+        return {"count": 0, "avg_duration": 0.0}
     pauses = []
     for i in range(1, len(timestamps)):
-        prev_end = timestamps[i - 1].get("end", 0)
-        curr_start = timestamps[i].get("start", 0)
-        gap = curr_start - prev_end
-        if gap > 0.5:   # pauses > 500ms
-            pauses.append(gap)
-
-    long_pauses = sum(1 for p in pauses if p > 2.0)  # > 2s = hesitation
-
+        gap = timestamps[i].get("start", 0) - timestamps[i - 1].get("end", 0)
+        if gap > 0.5:
+            pauses.append(round(gap, 2))
     return {
-        "pause_count": len(pauses),
-        "total_pause_time": round(sum(pauses), 2),
-        "avg_pause": round(np.mean(pauses), 2) if pauses else 0.0,
-        "long_pauses": long_pauses,
+        "count":        len(pauses),
+        "avg_duration": round(np.mean(pauses), 2) if pauses else 0.0,
     }
 
 
-def _get_duration_from_audio(audio_file) -> float:
-    """Load audio file and return duration in seconds."""
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp:
-        temp.write(audio_file.file.read())
-        temp_path = temp.name
-    try:
-        y, sr = librosa.load(temp_path, sr=None)
-        return librosa.get_duration(y=y, sr=sr)
-    finally:
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-
-
-def _score_fluency(wpm: float, filler_rate: float, pause_penalty: float) -> int:
-    """
-    Multi-factor fluency scoring.
-
-    WPM ranges calibrated for Indian English speakers:
-      • Indian conversational speech: 100–160 WPM
-      • Interview target range: 120–150 WPM
-      • Below 100 = too slow / hesitant
-      • Above 170 = too fast / unclear
-
-    Filler rate = fillers per 100 words
-    Pause penalty = weighted pause score (0-1)
-    """
-    # WPM sub-score
-    if wpm < 90 or wpm > 180:
-        wpm_score = 0
-    elif wpm < 110 or wpm > 165:
-        wpm_score = 1
-    else:
-        wpm_score = 2
-
-    # Filler penalty: > 5 fillers per 100 words = noticeable
-    if filler_rate > 10:
-        filler_deduction = 2
-    elif filler_rate > 5:
-        filler_deduction = 1
-    else:
-        filler_deduction = 0
-
-    raw = wpm_score - filler_deduction
-    # Apply pause penalty
-    if pause_penalty > 0.5:
-        raw = max(0, raw - 1)
-
-    return max(0, min(2, raw))
+def _get_duration(timestamps: list, audio_file) -> float:
+    if timestamps:
+        last = timestamps[-1]
+        dur  = last.get("end", 0) or last.get("start", 1)
+        if dur > 0:
+            return dur
+    if audio_file is not None:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
+            f.write(audio_file.file.read())
+            tmp = f.name
+        try:
+            y, sr = librosa.load(tmp, sr=None)
+            return librosa.get_duration(y=y, sr=sr)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+    return 1.0
 
 
 def analyze_fluency(transcript: str, timestamps: list, audio_file=None) -> dict:
-    """
-    Enhanced fluency analyzer.
-
-    New in this version:
-    ─────────────────────
-    1. Filler word detection (including Indian-English specific fillers)
-    2. Pause analysis from Whisper timestamps (pause count, total pause time)
-    3. Multi-factor score: WPM + filler rate + pause pattern
-    4. Richer return payload for frontend display
-    """
     try:
-        words = [w for w in transcript.split() if w.strip()]
+        words       = [w for w in transcript.split() if w.strip()]
         total_words = len(words)
+        duration    = _get_duration(timestamps, audio_file)
 
-        # ── Duration ────────────────────────────────────────────────────────
-        if timestamps:
-            # Use the last segment's end time
-            last_seg = timestamps[-1]
-            duration = last_seg.get("end", 0) or last_seg.get("start", 1)
-        elif audio_file is not None:
-            duration = _get_duration_from_audio(audio_file)
+        wpm          = round((total_words / max(duration, 1)) * 60, 1)
+        filler_count = _count_fillers(transcript)
+        filler_rate  = round((filler_count / max(total_words, 1)) * 100, 1)
+        pause_data   = _analyze_pauses(timestamps)
+
+        # WPM score
+        if wpm < 90 or wpm > 180:
+            wpm_score = 0
+        elif wpm < 110 or wpm > 165:
+            wpm_score = 1
         else:
-            duration = 1.0  # fallback
+            wpm_score = 2
 
-        if duration <= 0:
-            duration = 1.0
+        # Deductions
+        filler_deduction = 2 if filler_rate > 10 else (1 if filler_rate > 5 else 0)
+        long_pauses      = sum(1 for _ in range(pause_data["count"])
+                               if pause_data["avg_duration"] > 2.0)
+        pause_deduction  = 1 if long_pauses > 1 else 0
 
-        # ── WPM ─────────────────────────────────────────────────────────────
-        wpm = (total_words / duration) * 60
+        score = max(0, min(2, wpm_score - filler_deduction - pause_deduction))
 
-        # ── Filler words ─────────────────────────────────────────────────────
-        filler_data = _count_fillers(transcript)
-        filler_rate = (filler_data["total"] / max(total_words, 1)) * 100  # per 100 words
-
-        # ── Pause analysis ───────────────────────────────────────────────────
-        pause_data = _analyze_pauses(timestamps)
-        # Pause penalty: long hesitation pauses hurt more
-        pause_penalty = min(1.0, (pause_data["long_pauses"] * 0.3) + (pause_data["avg_pause"] * 0.1))
-
-        # ── Score ─────────────────────────────────────────────────────────────
-        score = _score_fluency(wpm, filler_rate, pause_penalty)
+        if score == 2:
+            note = "Smooth and natural speaking pace"
+        elif score == 1:
+            if filler_rate > 5:
+                note = "Good pace but too many filler words"
+            else:
+                note = "Slightly slow or fast — pace needs adjustment"
+        else:
+            note = "Fluency needs significant improvement"
 
         return {
-            "score": score,
-            "wpm": round(wpm, 1),
-            "duration_secs": round(duration, 1),
-            "total_words": total_words,
-            "fillers": filler_data,
-            "filler_rate_per_100": round(filler_rate, 1),
-            "pauses": pause_data,
+            "score":       score,
+            "wpm":         wpm,
+            "filler_rate": filler_rate,
+            "pauses":      pause_data,
+            "note":        note,
         }
 
     except Exception as e:
         print(f"FLUENCY ERROR: {e}")
-        return {"score": 1, "error": str(e)}
+        return {"score": 1, "wpm": 0.0, "filler_rate": 0.0,
+                "pauses": {"count": 0, "avg_duration": 0.0},
+                "note": "Could not evaluate fluency"}

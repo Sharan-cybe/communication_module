@@ -1,13 +1,31 @@
 import os
+import sys
+
+# ── Windows eSpeak NG path fix ────────────────────────────────────────────────
+# phonemizer on Windows locates espeak-ng.exe by searching the system PATH.
+# Setting os.environ["espeak"] is NOT recognized — it does nothing.
+# The correct fix: inject the eSpeak NG install dir into PATH before importing
+# phonemizer, so its subprocess call can find espeak-ng.exe.
+
+ESPEAK_DIR = r"C:\Program Files\eSpeak NG"
+ESPEAK_EXE = os.path.join(ESPEAK_DIR, "espeak-ng.exe")
+
+if sys.platform == "win32":
+    current_path = os.environ.get("PATH", "")
+    if ESPEAK_DIR not in current_path:
+        os.environ["PATH"] = ESPEAK_DIR + os.pathsep + current_path
+
+    # Some phonemizer versions also check this env var directly
+    os.environ["espeak"] = ESPEAK_EXE
+
+    if not os.path.isfile(ESPEAK_EXE):
+        print(f"WARNING: espeak-ng.exe not found at {ESPEAK_EXE}")
+        print("Install from: https://github.com/espeak-ng/espeak-ng/releases")
+
+# ── Import phonemizer AFTER PATH is patched ───────────────────────────────────
 from phonemizer import phonemize
-from phonemizer.backend import EspeakBackend
 
-# ── eSpeak path (Windows) ──────────────────────────────────────────────────────
-os.environ["espeak"] = r"C:\Program Files\eSpeak NG\espeak-ng.exe"
-os.environ["espeak"] += os.pathsep + r"C:\Program Files\eSpeak NG"
-
-# ── Same normalization table used for spoken side ─────────────────────────────
-# Imported here so both sides go through identical normalization.
+# ── Same normalization table used for both sides ──────────────────────────────
 from app.services.pronunciation.phoneme_utils import _normalize_phoneme
 
 
