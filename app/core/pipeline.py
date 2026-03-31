@@ -11,11 +11,17 @@ async def run_pipeline(audio_file, question: str) -> dict:
 
     # ── Transcription ─────────────────────────────────────────────────────────
     audio_file.file.seek(0)
-    transcript_data = transcribe_audio(audio_file)
-    transcript = transcript_data.get("text", "")
+    transcript_data = await transcribe_audio(audio_file)
+    transcript = transcript_data.get("text", "").strip()
     segments   = transcript_data.get("timestamps", [])
     words      = transcript_data.get("words", [])
-    print(f"TRANSCRIPT: {transcript[:120]}...")
+
+    print(f"TRANSCRIPT ({len(transcript)} chars): {transcript[:120]}...")
+    print(f"SEGMENTS: {len(segments)} | WORDS: {len(words)}")
+
+    # Guard: if Whisper returned nothing, log clearly and return early
+    if not transcript:
+        print("WARNING: Whisper returned empty transcript — audio may be silent or too short")
 
     # ── Pronunciation ─────────────────────────────────────────────────────────
     try:
@@ -25,15 +31,17 @@ async def run_pipeline(audio_file, question: str) -> dict:
             whisper_segments = segments,
             whisper_words    = words,
         )
+        print(f"PRONUNCIATION: score={pronunciation['score']} composite={pronunciation['composite_score']}")
     except Exception as e:
         print(f"PRONUNCIATION ERROR: {e}")
         pronunciation = {"score": 1, "clarity": 0.75, "consistency": 0.75,
-                         "confidence": 0.75, "note": "Could not evaluate pronunciation"}
+                         "composite_score": 0.75, "note": "Could not evaluate pronunciation"}
 
     # ── Fluency ───────────────────────────────────────────────────────────────
     try:
         audio_file.file.seek(0)
         fluency = analyze_fluency(transcript, segments, audio_file)
+        print(f"FLUENCY: score={fluency['score']} wpm={fluency.get('wpm')}")
     except Exception as e:
         print(f"FLUENCY ERROR: {e}")
         fluency = {"score": 1, "wpm": 0.0, "filler_rate": 0.0,
@@ -44,6 +52,7 @@ async def run_pipeline(audio_file, question: str) -> dict:
     try:
         audio_file.file.seek(0)
         tone = analyze_tone(audio_file)
+        print(f"TONE: score={tone['score']} pitch_std={tone.get('pitch_variation')}")
     except Exception as e:
         print(f"TONE ERROR: {e}")
         tone = {"score": 1, "pitch_variation": 0.0, "energy_variation": 0.0,
@@ -51,14 +60,24 @@ async def run_pipeline(audio_file, question: str) -> dict:
 
     # ── Grammar ───────────────────────────────────────────────────────────────
     try:
-        grammar = evaluate_grammar(transcript)
+        if not transcript:
+            grammar = {"score": 1, "mistakes": [], "note": "No speech detected to evaluate"}
+        else:
+            grammar = evaluate_grammar(transcript)
+        print(f"GRAMMAR: score={grammar['score']} mistakes={len(grammar.get('mistakes', []))}")
     except Exception as e:
         print(f"GRAMMAR ERROR: {e}")
         grammar = {"score": 1, "mistakes": [], "note": "Could not evaluate grammar"}
 
     # ── Comprehension ─────────────────────────────────────────────────────────
     try:
-        comprehension = evaluate_comprehension(question, transcript)
+        if not transcript:
+            comprehension = {"score": 1, "note": "No speech detected to evaluate"}
+        elif not question or not question.strip():
+            comprehension = {"score": 1, "note": "No question provided for comprehension check"}
+        else:
+            comprehension = evaluate_comprehension(question, transcript)
+        print(f"COMPREHENSION: score={comprehension['score']}")
     except Exception as e:
         print(f"COMPREHENSION ERROR: {e}")
         comprehension = {"score": 1, "note": "Could not evaluate comprehension"}
@@ -71,5 +90,5 @@ async def run_pipeline(audio_file, question: str) -> dict:
         grammar       = grammar,
         comprehension = comprehension,
     )
-    final["transcript"] = transcript.strip()
+    final["transcript"] = transcript
     return final

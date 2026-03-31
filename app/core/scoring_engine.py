@@ -112,13 +112,19 @@ def _improvements(details: dict) -> list:
             out.append("Fix minor grammar mistakes")
 
     c = details.get("comprehension", {})
+    # Filter out system error notes — don't show backend errors to the user
+    SYSTEM_NOTES = {"no answer provided to evaluate", "no speech detected to evaluate",
+                    "evaluation failed", "could not evaluate comprehension",
+                    "no question provided for comprehension check"}
+    c_note = c.get("note", "").lower()
     if c.get("score", 2) == 0:
-        out.append("Make sure to directly answer the question asked")
+        if c_note not in SYSTEM_NOTES:
+            out.append("Make sure to directly answer the question asked")
     elif c.get("score", 2) == 1:
-        note = c.get("note", "")
-        if note and len(note) < 80:
-            out.append(note)
-        else:
+        raw_note = c.get("note", "")
+        if raw_note and raw_note.lower() not in SYSTEM_NOTES and len(raw_note) < 80:
+            out.append(raw_note)
+        elif raw_note.lower() not in SYSTEM_NOTES:
             out.append("Cover all parts of the question more thoroughly")
 
     return out[:4] if out else ["Continue practising interview responses"]
