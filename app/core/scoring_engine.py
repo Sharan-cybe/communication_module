@@ -164,9 +164,93 @@ def aggregate_scores(**kwargs) -> dict:
         "improvements": _improvements(details),
     }
 
+    # Override if it's completely empty audio / no speech
+    if final_score == 0.0 and any("No speech detected" in str(kw.get("note", "")) for kw in kwargs.values()):
+        summary = {
+            "verdict":      "No speech detected",
+            "strengths":    [],
+            "improvements": ["Please ensure your microphone is working and speak clearly into it."],
+        }
+
     return {
         "final_score":    final_score,
         "final_score_10": int(round(score_10)),   # clean integer e.g. 7
         "summary":        summary,
         "details":        details,
     }
+
+
+# ── Session aggregator (Speaking) ─────────────────────────────────────────────
+
+def aggregate_speaking_session(results: list) -> dict:
+    if not results:
+        return {"final_score": 0.0, "final_score_10": 0, "summary": {"verdict": "No data", "strengths": [], "improvements": []}, "details": {}}
+        
+    param_scores = {
+        "pronunciation": {"score": [], "clarity": [], "consistency": []},
+        "fluency": {"score": [], "wpm": [], "filler_rate": [], "pauses_count": []},
+        "tone": {"score": [], "pitch_variation": [], "energy_variation": []},
+        "grammar": {"score": [], "mistakes_count": []},
+        "comprehension": {"score": []}
+    }
+    
+    for r in results:
+        details = r.get("details", {})
+        
+        p = details.get("pronunciation", {})
+        if "score" in p: param_scores["pronunciation"]["score"].append(p["score"])
+        if "clarity" in p: param_scores["pronunciation"]["clarity"].append(p["clarity"])
+        if "consistency" in p: param_scores["pronunciation"]["consistency"].append(p["consistency"])
+        
+        f = details.get("fluency", {})
+        if "score" in f: param_scores["fluency"]["score"].append(f["score"])
+        if "wpm" in f: param_scores["fluency"]["wpm"].append(f["wpm"])
+        if "filler_rate" in f: param_scores["fluency"]["filler_rate"].append(f["filler_rate"])
+        if "pauses" in f and isinstance(f["pauses"], dict) and "count" in f["pauses"]: 
+            param_scores["fluency"]["pauses_count"].append(f["pauses"]["count"])
+        
+        t = details.get("tone", {})
+        if "score" in t: param_scores["tone"]["score"].append(t["score"])
+        if "pitch_variation" in t: param_scores["tone"]["pitch_variation"].append(t["pitch_variation"])
+        if "energy_variation" in t: param_scores["tone"]["energy_variation"].append(t["energy_variation"])
+        
+        g = details.get("grammar", {})
+        if "score" in g: param_scores["grammar"]["score"].append(g["score"])
+        if "mistakes" in g: param_scores["grammar"]["mistakes_count"].append(len(g["mistakes"]))
+        
+        c = details.get("comprehension", {})
+        if "score" in c: param_scores["comprehension"]["score"].append(c["score"])
+        if "note" in c and "notes" not in param_scores["comprehension"]:
+            # just keep the first useful note if any
+            param_scores["comprehension"]["notes"] = c["note"]
+            
+    def avg(lst): return sum(lst) / len(lst) if lst else 0
+    
+    agg_details = {
+        "pronunciation": {
+            "score": avg(param_scores["pronunciation"]["score"]),
+            "clarity": avg(param_scores["pronunciation"]["clarity"]),
+            "consistency": avg(param_scores["pronunciation"]["consistency"])
+        },
+        "fluency": {
+            "score": avg(param_scores["fluency"]["score"]),
+            "wpm": avg(param_scores["fluency"]["wpm"]),
+            "filler_rate": avg(param_scores["fluency"]["filler_rate"]),
+            "pauses": {"count": avg(param_scores["fluency"]["pauses_count"])}
+        },
+        "tone": {
+            "score": avg(param_scores["tone"]["score"]),
+            "pitch_variation": avg(param_scores["tone"]["pitch_variation"]),
+            "energy_variation": avg(param_scores["tone"]["energy_variation"])
+        },
+        "grammar": {
+            "score": avg(param_scores["grammar"]["score"]),
+            "mistakes": [{"original": "", "corrected": ""}] if avg(param_scores["grammar"]["mistakes_count"]) > 0 else []
+        },
+        "comprehension": {
+            "score": avg(param_scores["comprehension"]["score"]),
+            "note": param_scores["comprehension"].get("notes", "")
+        }
+    }
+    
+    return aggregate_scores(**agg_details)

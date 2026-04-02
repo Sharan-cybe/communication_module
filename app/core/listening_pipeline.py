@@ -10,6 +10,7 @@ Three operations exposed to the endpoint layer:
 
 import base64
 import uuid
+import asyncio
 
 from app.services.speech.whisper_service import transcribe_audio
 from app.services.listening.listening_service import evaluate_all_responses
@@ -117,7 +118,7 @@ async def submit_all_responses(
                 "words_q2":    td2.get("words", []),
             })
 
-    return evaluate_all_responses(session_clips, clip_responses)
+    return await asyncio.to_thread(evaluate_all_responses, session_clips, clip_responses)
 
 
 async def evaluate_clip_response(
@@ -157,7 +158,7 @@ async def evaluate_clip_response(
             "words_q2": [],
         })
 
-    results = evaluate_all_responses(session_clips, responses)
+    results = await asyncio.to_thread(evaluate_all_responses, session_clips, responses)
     return next((r for r in results if r["clip_id"] == clip_id), {"error": "Evaluation failed"})
 
 

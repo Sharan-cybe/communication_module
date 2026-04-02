@@ -1,5 +1,6 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Body
 from app.services.speaking.question_generator import generate_speaking_questions
+from app.core.scoring_engine import aggregate_speaking_session
 
 router = APIRouter()
 
@@ -20,3 +21,12 @@ async def get_speaking_questions():
     ]
 
     return {"questions": questions}
+
+
+@router.post("/speaking/aggregate")
+async def aggregate_speaking(clip_results: list = Body(...)):
+    """
+    Receives an array of speaking evaluation results and aggregates them
+    into a single overall score and summary.
+    """
+    return aggregate_speaking_session(clip_results)

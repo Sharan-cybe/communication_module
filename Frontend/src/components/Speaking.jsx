@@ -4,7 +4,7 @@ import RecordButton from './RecordButton';
 import ProgressBar from './ProgressBar';
 import { useTimer } from '../hooks/useTimer';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
-import { fetchSpeakingQuestions, submitSpeakingResponse } from '../api/client';
+import { fetchSpeakingQuestions, submitSpeakingResponse, aggregateSpeakingResults } from '../api/client';
 import './Speaking.css';
 
 const PREP_TIME = 60; // 1 minute
@@ -67,11 +67,19 @@ export default function Speaking({ onComplete }) {
     }
   };
 
-  const handleNext = () => {
+  const handleNext = async () => {
     const nextIndex = currentIndex + 1;
     if (nextIndex >= questions.length) {
-      setPhase('done');
-      setTimeout(() => onComplete(results), 800);
+      setPhase('aggregating');
+      try {
+        const aggregated = await aggregateSpeakingResults(results);
+        setPhase('done');
+        setTimeout(() => onComplete(aggregated), 800);
+      } catch (err) {
+        console.error(err);
+        setError('Failed to aggregate speaking results. Please try again.');
+        setPhase('review');
+      }
     } else {
       setCurrentIndex(nextIndex);
       clearRecording();
@@ -159,6 +167,13 @@ export default function Speaking({ onComplete }) {
             <div className="speaking__submitting animate-fade-in text-center">
               <div className="speaking__loader" />
               <p className="mt-2 text-secondary">Evaluating your response…</p>
+            </div>
+          )}
+
+          {phase === 'aggregating' && (
+            <div className="speaking__submitting animate-fade-in text-center">
+              <div className="speaking__loader" />
+              <p className="mt-2 text-secondary">Aggregating session results…</p>
             </div>
           )}
 

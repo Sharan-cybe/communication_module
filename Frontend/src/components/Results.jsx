@@ -2,7 +2,9 @@ import './Results.css';
 
 export default function Results({ speakingResults, listeningResults, onRestart }) {
   // Simple scoring average for speaking
-  const avgSpeaking = speakingResults?.reduce((sum, res) => sum + (res.final_score_10 || 0), 0) / (speakingResults?.length || 1);
+  const avgSpeaking = Array.isArray(speakingResults)
+    ? speakingResults?.reduce((sum, res) => sum + (res.final_score_10 || 0), 0) / (speakingResults?.length || 1)
+    : speakingResults?.final_score_10 || 0;
   const avgListening = listeningResults?.listening_score_10 || 0;
   const overall = Math.round((avgSpeaking + avgListening) / 2);
 
@@ -37,18 +39,21 @@ export default function Results({ speakingResults, listeningResults, onRestart }
   ];
 
   const speakingParamScores = speakingParamsList.map(param => {
-    let totalScore = 0;
-    let count = 0;
-    if (speakingResults) {
+    let score = 0;
+    if (Array.isArray(speakingResults)) {
+      let totalScore = 0;
+      let count = 0;
       speakingResults.forEach(res => {
         if (res.details && res.details[param.key] && res.details[param.key].score !== undefined) {
           totalScore += res.details[param.key].score;
           count++;
         }
       });
+      score = count > 0 ? totalScore / count : 0;
+    } else if (speakingResults?.details && speakingResults.details[param.key] && speakingResults.details[param.key].score !== undefined) {
+      score = speakingResults.details[param.key].score;
     }
-    const avg = count > 0 ? totalScore / count : 0;
-    const score10 = Math.round((avg / 2) * 10);
+    const score10 = Math.round((score / 2) * 10);
     return { ...param, score: score10 };
   });
 
@@ -124,11 +129,17 @@ export default function Results({ speakingResults, listeningResults, onRestart }
             <div className="results__details">
               <h4>Strengths</h4>
               <ul>
-                {speakingResults?.[0]?.summary?.strengths?.map((s, i) => <li key={i}>{s}</li>)}
+                {(() => {
+                  const sArr = Array.isArray(speakingResults) ? speakingResults?.[0]?.summary?.strengths : speakingResults?.summary?.strengths;
+                  return sArr && sArr.length > 0 ? sArr.map((s, i) => <li key={i}>{s}</li>) : <li className="text-secondary">No strengths recorded.</li>;
+                })()}
               </ul>
               <h4 className="mt-4 text-warning">Areas to Improve</h4>
               <ul>
-                {speakingResults?.[0]?.summary?.improvements?.map((im, i) => <li key={i}>{im}</li>)}
+                {(() => {
+                  const iArr = Array.isArray(speakingResults) ? speakingResults?.[0]?.summary?.improvements : speakingResults?.summary?.improvements;
+                  return iArr && iArr.length > 0 ? iArr.map((im, i) => <li key={i}>{im}</li>) : <li className="text-secondary">No improvements recorded.</li>;
+                })()}
               </ul>
             </div>
           </div>

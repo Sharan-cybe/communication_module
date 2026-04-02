@@ -1,10 +1,12 @@
-const API_BASE = 'http://localhost:8000/api/v1';
+const API_BASE = 'https://eloise-frizzlier-unradically.ngrok-free.dev/api/v1';
 
 /**
  * Fetch 3 speaking questions (1 static + 2 dynamic)
  */
 export async function fetchSpeakingQuestions() {
-  const res = await fetch(`${API_BASE}/speaking/questions`);
+  const res = await fetch(`${API_BASE}/speaking/questions`, {
+    headers: { 'ngrok-skip-browser-warning': 'true' }
+  });
   if (!res.ok) throw new Error('Failed to fetch speaking questions');
   const data = await res.json();
   return data.questions;
@@ -22,6 +24,7 @@ export async function submitSpeakingResponse(audioBlob, question) {
 
   const res = await fetch(`${API_BASE}/evaluate`, {
     method: 'POST',
+    headers: { 'ngrok-skip-browser-warning': 'true' },
     body: form,
   });
   if (!res.ok) throw new Error('Speaking evaluation failed');
@@ -32,7 +35,9 @@ export async function submitSpeakingResponse(audioBlob, question) {
  * Fetch listening clips (4 clips with audio)
  */
 export async function fetchListeningClips() {
-  const res = await fetch(`${API_BASE}/listening/clips`);
+  const res = await fetch(`${API_BASE}/listening/clips`, {
+    headers: { 'ngrok-skip-browser-warning': 'true' }
+  });
   if (!res.ok) throw new Error('Failed to fetch listening clips');
   const data = await res.json();
   return data.clips; // { session_id, clips: [...] }
@@ -54,6 +59,7 @@ export async function submitListeningResponse(audioBlob, sessionId, clipId, ques
 
   const res = await fetch(`${API_BASE}/listening/respond`, {
     method: 'POST',
+    headers: { 'ngrok-skip-browser-warning': 'true' },
     body: form,
   });
   if (!res.ok) throw new Error('Listening response submission failed');
@@ -67,9 +73,30 @@ export async function submitListeningResponse(audioBlob, sessionId, clipId, ques
 export async function aggregateListeningResults(clipResults) {
   const res = await fetch(`${API_BASE}/listening/aggregate`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 
+      'Content-Type': 'application/json',
+      'ngrok-skip-browser-warning': 'true' 
+    },
     body: JSON.stringify(clipResults),
   });
   if (!res.ok) throw new Error('Listening aggregation failed');
   return res.json();
 }
+
+/**
+ * Aggregate speaking results
+ * @param {Array} clipResults
+ */
+export async function aggregateSpeakingResults(clipResults) {
+  const res = await fetch(`${API_BASE}/speaking/aggregate`, {
+    method: 'POST',
+    headers: { 
+      'Content-Type': 'application/json',
+      'ngrok-skip-browser-warning': 'true' 
+    },
+    body: JSON.stringify(clipResults),
+  });
+  if (!res.ok) throw new Error('Speaking aggregation failed');
+  return res.json();
+}
+
