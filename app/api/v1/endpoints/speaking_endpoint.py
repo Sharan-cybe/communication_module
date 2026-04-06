@@ -1,8 +1,15 @@
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, UploadFile, File, Form
 from app.services.speaking.question_generator import generate_speaking_questions
 from app.core.scoring_engine import aggregate_speaking_session
+from app.core.pipeline import run_pipeline
 
 router = APIRouter()
+
+
+@router.post("/evaluate")
+async def evaluate(audio: UploadFile = File(...), question: str = Form("")):
+    result = await run_pipeline(audio, question)
+    return result
 
 
 @router.get("/speaking/questions")

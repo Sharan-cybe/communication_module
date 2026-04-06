@@ -40,7 +40,7 @@ export async function fetchListeningClips() {
   });
   if (!res.ok) throw new Error('Failed to fetch listening clips');
   const data = await res.json();
-  return data.clips; // { session_id, clips: [...] }
+  return data; // Return full object { session_id, clips } instead of data.clips
 }
 
 /**
