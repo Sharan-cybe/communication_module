@@ -78,9 +78,9 @@ def evaluate_pronunciation(
     composite = round(max(0.0, min(1.0, composite)), 3)
 
     # Indian English calibrated thresholds (lowered from 0.80/0.60)
-    if composite >= 0.70:
+    if composite >= 0.60:
         score = 2
-    elif composite >= 0.50:
+    elif composite >= 0.40:
         score = 1
     else:
         score = 0

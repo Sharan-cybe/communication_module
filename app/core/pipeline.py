@@ -63,7 +63,8 @@ async def run_pipeline(audio_file, question: str) -> dict:
 
         try:
             fluency = analyze_fluency(transcript, segments, local_audio_fluency)
-            print(f"FLUENCY: score={fluency['score']} wpm={fluency.get('wpm')}")
+            filler_words_log = fluency.get('filler_words', [])
+            print(f"FLUENCY: score={fluency['score']} wpm={fluency.get('wpm')} fillers={filler_words_log}")
         except Exception as e:
             print(f"FLUENCY ERROR: {e}")
             fluency = {"score": 1, "wpm": 0.0, "filler_rate": 0.0,
@@ -71,7 +72,7 @@ async def run_pipeline(audio_file, question: str) -> dict:
 
         try:
             tone = analyze_tone(local_audio_tone)
-            print(f"TONE: score={tone['score']} pitch_std={tone.get('pitch_variation')}")
+            print(f"TONE: score={tone['score']} composite={tone.get('diagnostics', {}).get('composite')}")
         except Exception as e:
             print(f"TONE ERROR: {e}")
             tone = {"score": 1, "pitch_variation": 0.0, "energy_variation": 0.0,

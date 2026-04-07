@@ -5,19 +5,25 @@ import os
 import re
 
 FILLER_WORDS = {
-    "um", "uh", "hmm", "er", "ah",
+    "um", "umm", "uh", "uhh", "uhhh", "hmm", "er", "ah",
     "like", "you know", "so",
     "basically", "actually", "only", "itself",
     "na", "no", "right",
 }
 
 
-def _count_fillers(transcript: str) -> int:
+def _count_fillers(transcript: str) -> dict:
     lower = transcript.lower()
     total = 0
+    words_used = []
+    
     for filler in FILLER_WORDS:
-        total += len(re.findall(r'\b' + re.escape(filler) + r'\b', lower))
-    return total
+        count = len(re.findall(r'\b' + re.escape(filler) + r'\b', lower))
+        if count > 0:
+            total += count
+            words_used.append(f"{filler}({count})")
+            
+    return {"total": total, "words_used": words_used}
 
 
 def _analyze_pauses(timestamps: list) -> dict:
@@ -60,7 +66,9 @@ def analyze_fluency(transcript: str, timestamps: list, audio_file=None) -> dict:
         duration    = _get_duration(timestamps, audio_file)
 
         wpm          = round((total_words / max(duration, 1)) * 60, 1)
-        filler_count = _count_fillers(transcript)
+        filler_results = _count_fillers(transcript)
+        filler_count = filler_results["total"]
+        filler_words = filler_results["words_used"]
         filler_rate  = round((filler_count / max(total_words, 1)) * 100, 1)
         pause_data   = _analyze_pauses(timestamps)
 
@@ -94,6 +102,7 @@ def analyze_fluency(transcript: str, timestamps: list, audio_file=None) -> dict:
             "score":       score,
             "wpm":         wpm,
             "filler_rate": filler_rate,
+            "filler_words": filler_words,
             "pauses":      pause_data,
             "note":        note,
         }
