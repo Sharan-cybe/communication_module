@@ -39,21 +39,29 @@ export default function Results({ speakingResults, listeningResults, onRestart }
   ];
 
   const speakingParamScores = speakingParamsList.map(param => {
-    let score = 0;
-    if (Array.isArray(speakingResults)) {
+    let score10 = 0;
+    
+    // Check new backend continuous scores (0-1 scale)
+    if (speakingResults?._continuous_scores && speakingResults._continuous_scores[param.key] !== undefined) {
+      score10 = Math.round(speakingResults._continuous_scores[param.key] * 10);
+    } else if (Array.isArray(speakingResults)) {
       let totalScore = 0;
       let count = 0;
       speakingResults.forEach(res => {
-        if (res.details && res.details[param.key] && res.details[param.key].score !== undefined) {
-          totalScore += res.details[param.key].score;
+        if (res._continuous_scores && res._continuous_scores[param.key] !== undefined) {
+          totalScore += res._continuous_scores[param.key];
+          count++;
+        } else if (res.details && res.details[param.key] && res.details[param.key].score !== undefined) {
+          totalScore += (res.details[param.key].score / 2); // old format baseline
           count++;
         }
       });
-      score = count > 0 ? totalScore / count : 0;
+      score10 = count > 0 ? Math.round((totalScore / count) * 10) : 0;
     } else if (speakingResults?.details && speakingResults.details[param.key] && speakingResults.details[param.key].score !== undefined) {
-      score = speakingResults.details[param.key].score;
+      // old format fallback
+      score10 = Math.round((speakingResults.details[param.key].score / 2) * 10);
     }
-    const score10 = Math.round((score / 2) * 10);
+    
     return { ...param, score: score10 };
   });
 
@@ -65,11 +73,17 @@ export default function Results({ speakingResults, listeningResults, onRestart }
   ];
 
   const listeningParamScores = listeningParamsList.map(param => {
-    let avg = 0;
+    let score10 = 0;
     if (listeningResults?.parameters && listeningResults.parameters[param.key]) {
-      avg = listeningResults.parameters[param.key].avg_score;
+      const p = listeningResults.parameters[param.key];
+      // New format uses avg_score_01
+      if (p.avg_score_01 !== undefined) {
+        score10 = Math.round(p.avg_score_01 * 10);
+      } else {
+        // Old format fallback
+        score10 = Math.round(((p.avg_score || 0) / 2) * 10);
+      }
     }
-    const score10 = Math.round((avg / 2) * 10);
     return { ...param, score: score10 };
   });
 

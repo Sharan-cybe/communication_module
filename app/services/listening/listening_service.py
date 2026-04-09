@@ -1,14 +1,18 @@
 """
-listening_service.py
-─────────────────────
-Evaluates all clip responses together in a single call per task type.
+listening_service.py  v2
+─────────────────────────
+ONE LLM call evaluates all 4 clips (accuracy + retention + reconstruction) together.
 
-Parameters evaluated:
+Old system: 2 REPEAT clips × 3 LLM calls + 2 QnA clips × 1 LLM call = 8 calls
+New system: 1 combined LLM call for entire session                    = 1 call
+
+Signal computation (keyword hit-rate, token coverage, edit-distance) runs locally
+first and is passed into the single LLM call as anchors — same accuracy as before.
+
+Parameters:
   1. listening_accuracy       — correct content captured?      (keyword + LLM)
   2. retention                — how complete was the recall?   (coverage ratio + LLM)
-  3. sentence_reconstruction  — grammatical structure?         (edit-distance + LLM)
-
-NOTE: pronunciation_imitation has been removed entirely.
+  3. sentence_reconstruction  — grammatical structure?         (edit-distance + LLM, REPEAT only)
 """
 
 import re
@@ -31,14 +35,13 @@ def _clean(text: str) -> str:
 
 
 def _tokens(text: str) -> set:
-    STOP = {"a","an","the","and","or","but","in","on","at","to","for","of",
-            "is","are","was","were","be","i","you","we","it","this","that",
-            "have","has","will","please","all","can","your"}
+    STOP = {"a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+            "of", "is", "are", "was", "were", "be", "i", "you", "we", "it",
+            "this", "that", "have", "has", "will", "please", "all", "can", "your"}
     return {w for w in _clean(text).split() if w and w not in STOP}
 
 
 def _is_empty(text: str) -> bool:
-    """Returns True if the transcript is blank or too short to evaluate."""
     return not text or len(text.strip()) < 3
 
 
@@ -55,39 +58,55 @@ def _jaccard(text_a: str, text_b: str) -> float:
 
 
 def _is_clip_repeat(reference: str, response: str, threshold: float = 0.50) -> bool:
-    """
-    Returns True if the candidate's response is too similar to the reference
-    passage — meaning they repeated the clip instead of answering the question.
-
-    Threshold rationale:
-      Genuine answer  → Jaccard 0.15–0.35
-      Paraphrase      → Jaccard 0.20–0.40
-      Partial repeat  → Jaccard 0.55–0.80  ← flagged
-      Full repeat     → Jaccard 0.90–1.00  ← flagged
-    """
     return _jaccard(reference, response) > threshold
 
 
-# Penalty dicts applied when a clip repeat or empty response is detected
-CLIP_REPEAT_PENALTY = {
-    "score": 0,
-    "keyword_hit_rate": 0.0,
-    "note": "Candidate repeated the audio clip instead of answering the question",
-    "flagged_as_repeat": True,
-}
+# ─────────────────────────────────────────────────────────────────────────────
+# Signal computation  (all pure Python — no network calls)
+# ─────────────────────────────────────────────────────────────────────────────
 
-EMPTY_RESPONSE_PENALTY = {
-    "score": 0,
-    "note": "No response provided",
-    "flagged_as_empty": True,
-}
+def _keyword_hit_rate(key_facts: list, response: str) -> float:
+    if not key_facts:
+        return 0.75
+    resp_lower = _clean(response)
+    hits = sum(1 for kf in key_facts if _clean(kf) in resp_lower)
+    return round(hits / len(key_facts), 2)
+
+
+def _token_coverage(reference: str, response: str) -> float:
+    ref_tokens  = _tokens(reference)
+    resp_tokens = _tokens(response)
+    if not ref_tokens:
+        return 0.75
+    return round(len(ref_tokens & resp_tokens) / len(ref_tokens), 2)
+
+
+def _edit_distance(a: list, b: list) -> int:
+    m, n = len(a), len(b)
+    dp = list(range(n + 1))
+    for i in range(1, m + 1):
+        prev, dp[0] = dp[0], i
+        for j in range(1, n + 1):
+            temp = dp[j]
+            dp[j] = prev if a[i - 1] == b[j - 1] else 1 + min(prev, dp[j], dp[j - 1])
+            prev = temp
+    return dp[n]
+
+
+def _structure_similarity(reference: str, response: str) -> float:
+    ref  = _clean(reference).split()
+    resp = _clean(response).split()
+    if not ref:
+        return 0.75
+    dist = _edit_distance(ref, resp)
+    return round(max(0.0, 1.0 - dist / max(len(ref), 1)), 2)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LLM call helper
+# LLM helper
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _llm(prompt: str, max_tokens: int = 400) -> dict:
+def _llm(prompt: str, max_tokens: int = 1000) -> dict:
     for attempt in range(3):
         try:
             resp = client.chat.completions.create(
@@ -111,433 +130,371 @@ def _llm(prompt: str, max_tokens: int = 400) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Parameter 1 — Listening Accuracy
-# Signal: keyword hit-rate → anchors the LLM score
+# Combined prompt — evaluates all clips in one shot
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _keyword_hit_rate(key_facts: list, response: str) -> float:
-    """What fraction of key_facts appear in the response text?"""
-    if not key_facts:
-        return 0.75   # no facts defined — neutral
-    resp_lower = _clean(response)
-    hits = sum(1 for kf in key_facts if _clean(kf) in resp_lower)
-    return round(hits / len(key_facts), 2)
+COMBINED_LISTENING_PROMPT = """You are a listening comprehension evaluator. Evaluate ALL clips in a single pass using the pre-computed signals provided as anchors.
+
+SCORING RULES:
+- Use the pre-computed signals (keyword_hit_rate, token_coverage, structure_similarity) as primary anchors
+- Only override if you detect clear semantic mismatch the numbers cannot capture
+- Bias TOWARDS higher scores when in doubt — do NOT be overly strict
+
+SCORE SCALE (per parameter): 0 | 1 | 2
+
+LISTENING ACCURACY:
+  2 = ≥80% key facts captured AND content is correct
+  1 = 40–79% OR 1–2 minor errors
+  0 = <40% OR major factual errors OR no answer
+
+RETENTION:
+  2 = ≥75% token/fact coverage — full or near-full recall
+  1 = 40–74% — roughly half recalled
+  0 = <40% — major portions missing
+
+SENTENCE RECONSTRUCTION (REPEAT clips only):
+  2 = ≥80% structure similarity — matches original pattern well
+  1 = 50–79% — mostly correct with notable structural differences
+  0 = <50% — broken structure or fragments
+
+---
+
+CLIPS TO EVALUATE:
+
+{clip_blocks}
+
+---
+
+Return ONLY valid JSON — no markdown, no explanation:
+
+{{
+  "clips": [
+    {{
+      "clip_id": "<clip_id>",
+      "task_type": "<REPEAT|QnA>",
+      "listening_accuracy": {{
+        "score": <0|1|2>,
+        "note": "<max 15 words>"
+      }},
+      "retention": {{
+        "score": <0|1|2>,
+        "note": "<max 15 words>"
+      }},
+      "sentence_reconstruction": {{
+        "score": <0|1|2>,
+        "note": "<max 15 words>"
+      }}
+    }}
+  ]
+}}
+
+For QnA clips, sentence_reconstruction score must be null (not evaluated).
+For each QnA clip, listening_accuracy and retention scores should reflect the average quality of both Q+A answers combined.
+Return one object per clip in the same order as the input.
+"""
 
 
-ACCURACY_REPEAT_PROMPT = """You are a listening accuracy evaluator.
+def _build_clip_block(clip_id: str, task_type: str, clip_signals: dict) -> str:
+    """Format a single clip's signals into the prompt block."""
+    lines = [f"CLIP: {clip_id}  (type: {task_type})"]
 
-The candidate was asked to REPEAT this sentence:
-Reference: "{reference}"
+    if task_type == "REPEAT":
+        lines.append(f"  Reference:          \"{clip_signals['reference']}\"")
+        lines.append(f"  Candidate response: \"{clip_signals['transcript']}\"")
+        lines.append(f"  keyword_hit_rate:      {clip_signals['keyword_hit_rate']:.0%}")
+        lines.append(f"  token_coverage:        {clip_signals['token_coverage']:.0%}")
+        lines.append(f"  structure_similarity:  {clip_signals['structure_similarity']:.0%}")
 
-They said:
-Response: "{response}"
+    elif task_type == "QnA":
+        lines.append(f"  Reference passage: \"{clip_signals['reference']}\"")
+        for qi in (1, 2):
+            qa = clip_signals.get(f"q{qi}", {})
+            lines.append(f"  Q{qi}: {qa.get('question', '')}")
+            lines.append(f"    Answer:            \"{qa.get('answer', '[no answer]')}\"")
+            lines.append(f"    keyword_hit_rate:  {qa.get('keyword_hit_rate', 0.0):.0%}")
+            lines.append(f"    fact_coverage:     {qa.get('fact_coverage', 0.0):.0%}")
+            if qa.get("flagged_as_repeat"):
+                lines.append(f"    ⚠ flagged as clip repeat — penalise this answer")
+            if qa.get("flagged_as_empty"):
+                lines.append(f"    ⚠ no answer provided")
 
-Keyword hit rate (computed): {hit_rate:.0%} of key facts present in their response.
-Key facts that must appear: {key_facts}
-
-Based on the keyword hit rate AND the overall content accuracy, score:
-0 = < 40% key facts captured OR major factual errors (wrong numbers/names)
-1 = 40-79% key facts captured OR 1-2 minor substitutions
-2 = ≥ 80% key facts captured AND all critical details correct
-
-Return ONLY valid JSON:
-{{"score": <0|1|2>, "note": "<what was correct or wrong, max 15 words>"}}"""
-
-ACCURACY_QNA_PROMPT = """You are a listening comprehension evaluator.
-
-Audio passage:
-"{reference}"
-
-Question 1: {q1}
-Answer 1: "{a1}"
-Q1 key facts: {kf1}
-Q1 keyword hit: {h1:.0%}
-
-Question 2: {q2}
-Answer 2: "{a2}"
-Q2 key facts: {kf2}
-Q2 keyword hit: {h2:.0%}
-
-Score each answer independently using the keyword hit rate as anchor:
-0 = < 40% key facts OR factually wrong OR no answer given
-1 = 40-79% OR partially correct
-2 = ≥ 80% AND factually correct
-
-Return ONLY valid JSON:
-{{"q1": {{"score": <0|1|2>, "note": "<max 12 words>"}}, "q2": {{"score": <0|1|2>, "note": "<max 12 words>"}}}}"""
-
-
-def evaluate_accuracy_repeat(reference: str, response: str, key_facts: list) -> dict:
-    # Empty response → hard 0, skip LLM
-    if _is_empty(response):
-        return {**EMPTY_RESPONSE_PENALTY, "keyword_hit_rate": 0.0}
-
-    hit_rate = _keyword_hit_rate(key_facts, response)
-    data = _llm(ACCURACY_REPEAT_PROMPT.format(
-        reference=reference, response=response,
-        hit_rate=hit_rate, key_facts=key_facts,
-    ))
-    score = max(0, min(2, int(data.get("score", 1))))
-
-    # Hard overrides: LLM can't hallucinate a high score on bad hit rates
-    if hit_rate < 0.30 and score == 2:
-        score = 1
-    if hit_rate > 0.85 and score == 0:
-        score = 1
-
-    return {"score": score, "keyword_hit_rate": hit_rate, "note": data.get("note", "")}
-
-
-def evaluate_accuracy_qna(
-    reference: str,
-    q1: str, a1: str, kf1: list,
-    q2: str, a2: str, kf2: list,
-) -> tuple:
-    # Handle empties before any LLM call
-    empty_q1 = _is_empty(a1)
-    empty_q2 = _is_empty(a2)
-
-    if empty_q1 and empty_q2:
-        r1 = {**EMPTY_RESPONSE_PENALTY, "keyword_hit_rate": 0.0}
-        r2 = {**EMPTY_RESPONSE_PENALTY, "keyword_hit_rate": 0.0}
-        return r1, r2
-
-    h1 = 0.0 if empty_q1 else _keyword_hit_rate(kf1, a1)
-    h2 = 0.0 if empty_q2 else _keyword_hit_rate(kf2, a2)
-
-    data = _llm(ACCURACY_QNA_PROMPT.format(
-        reference=reference,
-        q1=q1, a1=(a1 if not empty_q1 else "[no answer]"), kf1=kf1, h1=h1,
-        q2=q2, a2=(a2 if not empty_q2 else "[no answer]"), kf2=kf2, h2=h2,
-    ))
-
-    def _parse(raw: dict, hit: float, is_empty: bool) -> dict:
-        if is_empty:
-            return {**EMPTY_RESPONSE_PENALTY, "keyword_hit_rate": 0.0}
-        score = max(0, min(2, int(raw.get("score", 1))))
-        if hit < 0.30 and score == 2: score = 1
-        if hit > 0.85 and score == 0: score = 1
-        return {"score": score, "keyword_hit_rate": hit, "note": raw.get("note", "")}
-
-    r1 = _parse(data.get("q1", {}), h1, empty_q1)
-    r2 = _parse(data.get("q2", {}), h2, empty_q2)
-    return r1, r2
+    return "\n".join(lines)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Parameter 2 — Retention
-#
-# REPEAT clips: token coverage ratio (reference passage vs. response)
-# QnA clips:    key-fact coverage  (key_facts recalled vs. total key_facts)
-#               A good answer won't repeat the passage verbatim — it extracts
-#               specific facts, so measuring against key_facts is semantically
-#               correct rather than measuring against the full reference text.
+# Penalty dicts
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _token_coverage(reference: str, response: str) -> float:
-    """Fraction of meaningful reference tokens that appear in response."""
-    ref_tokens  = _tokens(reference)
-    resp_tokens = _tokens(response)
-    if not ref_tokens:
-        return 0.75
-    overlap = ref_tokens & resp_tokens
-    return round(len(overlap) / len(ref_tokens), 2)
+EMPTY_PENALTY = {
+    "score": 0,
+    "note": "No response provided",
+    "flagged_as_empty": True,
+}
 
-
-RETENTION_PROMPT = """You are a memory retention evaluator.
-
-The candidate heard:
-"{reference}"
-
-They recalled:
-"{response}"
-
-Token coverage ratio (computed): {coverage:.0%}
-(This measures what fraction of meaningful words from the original appeared in their response.)
-
-Score based on coverage and completeness of key details:
-0 = < 40% coverage — major portions missing
-1 = 40-74% coverage — roughly half recalled
-2 = ≥ 75% coverage — full or near-full recall
-
-Return ONLY valid JSON:
-{{"score": <0|1|2>, "note": "<what was recalled well or missed, max 15 words>"}}"""
-
-
-def evaluate_retention_repeat(reference: str, response: str) -> dict:
-    """Retention for REPEAT clips — measures passage token coverage."""
-    if _is_empty(response):
-        return {**EMPTY_RESPONSE_PENALTY, "coverage_ratio": 0.0}
-
-    coverage = _token_coverage(reference, response)
-    data = _llm(RETENTION_PROMPT.format(
-        reference=reference, response=response, coverage=coverage
-    ))
-    score = max(0, min(2, int(data.get("score", 1))))
-
-    # Hard anchors
-    if coverage < 0.35 and score == 2: score = 1
-    if coverage > 0.75 and score == 0: score = 1
-
-    return {"score": score, "coverage_ratio": coverage, "note": data.get("note", "")}
-
-
-def evaluate_retention_qna(key_facts: list, response: str) -> dict:
-    """
-    Retention for QnA clips — measures key-fact recall, NOT passage repetition.
-    A correct concise answer ("The meeting was on Monday") should score high
-    even though it has low token overlap with a long passage.
-    """
-    if _is_empty(response):
-        return {**EMPTY_RESPONSE_PENALTY, "coverage_ratio": 0.0}
-
-    if not key_facts:
-        return {"score": 1, "coverage_ratio": 0.75, "note": "No key facts defined"}
-
-    resp_lower = _clean(response)
-    hits = [kf for kf in key_facts if _clean(kf) in resp_lower]
-    coverage = round(len(hits) / len(key_facts), 2)
-
-    score = 2 if coverage >= 0.75 else (1 if coverage >= 0.40 else 0)
-
-    return {
-        "score": score,
-        "coverage_ratio": coverage,
-        "facts_recalled": hits,
-        "note": f"Recalled {len(hits)}/{len(key_facts)} key facts",
-    }
+CLIP_REPEAT_PENALTY = {
+    "score": 0,
+    "note": "Candidate repeated the audio clip instead of answering the question",
+    "flagged_as_repeat": True,
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Parameter 3 — Sentence Reconstruction (REPEAT clips only)
-# Signal: normalised Levenshtein distance between reference and response tokens
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _edit_distance(a: list, b: list) -> int:
-    m, n = len(a), len(b)
-    dp = list(range(n + 1))
-    for i in range(1, m + 1):
-        prev, dp[0] = dp[0], i
-        for j in range(1, n + 1):
-            temp = dp[j]
-            dp[j] = prev if a[i-1] == b[j-1] else 1 + min(prev, dp[j], dp[j-1])
-            prev = temp
-    return dp[n]
-
-
-def _structure_similarity(reference: str, response: str) -> float:
-    """Normalised token edit distance (1 = identical, 0 = completely different)."""
-    ref  = _clean(reference).split()
-    resp = _clean(response).split()
-    if not ref:
-        return 0.75
-    dist = _edit_distance(ref, resp)
-    return round(max(0.0, 1.0 - dist / max(len(ref), 1)), 2)
-
-
-RECONSTRUCTION_PROMPT = """You are a sentence structure evaluator.
-
-Reference sentence: "{reference}"
-Candidate response: "{response}"
-
-Structure similarity score (computed): {similarity:.0%}
-(1.0 = word-for-word match, 0 = completely different word order/structure)
-
-Evaluate STRUCTURAL accuracy — word order, grammatical form, key sentence components.
-Do NOT penalize for accent-related word substitutions.
-
-Score:
-0 = < 50% similarity — broken structure or sentence fragments
-1 = 50-79% similarity — mostly correct but notable structural issues
-2 = ≥ 80% similarity — well-structured, matches original pattern
-
-Return ONLY valid JSON:
-{{"score": <0|1|2>, "note": "<structural assessment, max 15 words>"}}"""
-
-
-def evaluate_sentence_reconstruction(reference: str, response: str) -> dict:
-    if _is_empty(response):
-        return {**EMPTY_RESPONSE_PENALTY, "structure_similarity": 0.0}
-
-    similarity = _structure_similarity(reference, response)
-    data = _llm(RECONSTRUCTION_PROMPT.format(
-        reference=reference, response=response, similarity=similarity
-    ))
-    score = max(0, min(2, int(data.get("score", 1))))
-
-    if similarity < 0.45 and score == 2: score = 1
-    if similarity > 0.80 and score == 0: score = 1
-
-    return {"score": score, "structure_similarity": similarity, "note": data.get("note", "")}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Main evaluator — evaluate ALL clip responses together
+# Main evaluator — one LLM call for ALL clips
 # ─────────────────────────────────────────────────────────────────────────────
 
 def evaluate_all_responses(session_clips: list, clip_responses: list) -> list:
     """
-    Evaluate all clip responses in a single function call.
+    Evaluate all clip responses in a single LLM call.
 
-    session_clips   : list of ListeningClip objects for this session
-    clip_responses  : list of dicts, one per clip:
-
-        For REPEAT clips:
-        {
-          "clip_id": str,
-          "transcript": str,          # Whisper transcript of candidate
-          "whisper_segments": list,   # from transcribe_audio (kept for compat, unused)
-          "whisper_words": list,      # from transcribe_audio (kept for compat, unused)
-        }
-
-        For QnA clips:
-        {
-          "clip_id": str,
-          "answer_q1": str,           # transcript for question 1
-          "answer_q2": str,           # transcript for question 2
-        }
+    session_clips   : list of ListeningClip objects
+    clip_responses  : list of response dicts (same format as before)
 
     Returns list of result dicts, one per clip.
     """
     clip_map = {c.clip_id: c for c in session_clips}
 
-    results = []
+    # ── Step 1: Compute all signals locally (no network) ─────────────────────
+    clip_signals_list = []    # list of (clip_id, task_type, signals_dict)
+    early_results     = {}    # clip_id → result if fully handled without LLM
+
     for resp in clip_responses:
         clip_id = resp["clip_id"]
         clip    = clip_map.get(clip_id)
         if not clip:
-            results.append({"clip_id": clip_id, "error": "Clip not found in session"})
+            early_results[clip_id] = {"clip_id": clip_id, "error": "Clip not found in session"}
             continue
 
-        result = {"clip_id": clip_id, "task_type": clip.task_type}
-
-        # ── REPEAT clips ──────────────────────────────────────────────────────
         if clip.task_type == "REPEAT":
             transcript = resp.get("transcript", "")
-            result["transcript"] = transcript
 
             if _is_empty(transcript):
+                early_results[clip_id] = {
+                    "clip_id":                clip_id,
+                    "task_type":              "REPEAT",
+                    "transcript":             transcript,
+                    "listening_accuracy":     {**EMPTY_PENALTY, "keyword_hit_rate": 0.0},
+                    "retention":              {**EMPTY_PENALTY, "coverage_ratio": 0.0},
+                    "sentence_reconstruction":{**EMPTY_PENALTY, "structure_similarity": 0.0},
+                }
                 print(f"[{clip_id}] REPEAT — empty transcript, all params scored 0")
-                result["listening_accuracy"]      = {**EMPTY_RESPONSE_PENALTY, "keyword_hit_rate": 0.0}
-                result["retention"]               = {**EMPTY_RESPONSE_PENALTY, "coverage_ratio": 0.0}
-                result["sentence_reconstruction"] = {**EMPTY_RESPONSE_PENALTY, "structure_similarity": 0.0}
-            else:
-                result["listening_accuracy"]      = evaluate_accuracy_repeat(
-                    clip.reference_text, transcript, clip.key_facts
-                )
-                result["retention"]               = evaluate_retention_repeat(
-                    clip.reference_text, transcript
-                )
-                result["sentence_reconstruction"] = evaluate_sentence_reconstruction(
-                    clip.reference_text, transcript
-                )
+                continue
 
-            print(
-                f"[{clip_id}] REPEAT | "
-                f"accuracy={result['listening_accuracy']['score']} "
-                f"retention={result['retention']['score']} "
-                f"reconstruction={result['sentence_reconstruction']['score']}"
-            )
+            khr        = _keyword_hit_rate(clip.key_facts, transcript)
+            cov        = _token_coverage(clip.reference_text, transcript)
+            sim        = _structure_similarity(clip.reference_text, transcript)
 
-        # ── QnA clips ─────────────────────────────────────────────────────────
+            clip_signals_list.append((clip_id, "REPEAT", {
+                "reference":            clip.reference_text,
+                "transcript":           transcript,
+                "keyword_hit_rate":     khr,
+                "token_coverage":       cov,
+                "structure_similarity": sim,
+            }))
+
         elif clip.task_type == "QnA":
             a1 = resp.get("answer_q1", "")
             a2 = resp.get("answer_q2", "")
-
             kf  = clip.key_facts
             kf1 = kf[0] if len(kf) > 0 else []
             kf2 = kf[1] if len(kf) > 1 else []
 
-            # ── Clip-repeat detection ─────────────────────────────────────────
             repeat_q1 = (not _is_empty(a1)) and _is_clip_repeat(clip.reference_text, a1)
             repeat_q2 = (not _is_empty(a2)) and _is_clip_repeat(clip.reference_text, a2)
 
-            if repeat_q1:
-                print(f"[{clip_id}] Q1 flagged as clip repeat "
-                      f"(jaccard={_jaccard(clip.reference_text, a1):.2f})")
-            if repeat_q2:
-                print(f"[{clip_id}] Q2 flagged as clip repeat "
-                      f"(jaccard={_jaccard(clip.reference_text, a2):.2f})")
+            # If both answers are empty
+            if _is_empty(a1) and _is_empty(a2):
+                early_results[clip_id] = {
+                    "clip_id":            clip_id,
+                    "task_type":          "QnA",
+                    "listening_accuracy": {**EMPTY_PENALTY, "q1": EMPTY_PENALTY, "q2": EMPTY_PENALTY,
+                                           "score": 0},
+                    "retention":          {**EMPTY_PENALTY, "q1": EMPTY_PENALTY, "q2": EMPTY_PENALTY,
+                                           "score": 0},
+                }
+                continue
 
-            # ── Listening Accuracy ────────────────────────────────────────────
-            if repeat_q1 and repeat_q2:
-                acc_q1 = dict(CLIP_REPEAT_PENALTY)
-                acc_q2 = dict(CLIP_REPEAT_PENALTY)
-            elif repeat_q1:
-                acc_q1 = dict(CLIP_REPEAT_PENALTY)
-                _, acc_q2 = evaluate_accuracy_qna(
-                    clip.reference_text,
-                    clip.questions[0], a1, kf1,
-                    clip.questions[1], a2, kf2,
-                )
-            elif repeat_q2:
-                acc_q1, _ = evaluate_accuracy_qna(
-                    clip.reference_text,
-                    clip.questions[0], a1, kf1,
-                    clip.questions[1], a2, kf2,
-                )
-                acc_q2 = dict(CLIP_REPEAT_PENALTY)
-            else:
-                acc_q1, acc_q2 = evaluate_accuracy_qna(
-                    clip.reference_text,
-                    clip.questions[0], a1, kf1,
-                    clip.questions[1], a2, kf2,
-                )
-
-            # ── Retention ─────────────────────────────────────────────────────
-            # Clip repeat → force 0 (repeating passage gives fake 100% coverage)
-            # Empty answer → force 0
-            # Normal answer → evaluate against key_facts (NOT full passage)
-            REPEAT_RETENTION = {
-                "score": 0,
-                "coverage_ratio": 1.0,
-                "facts_recalled": [],
-                "note": "Repeated audio clip instead of answering",
-                "flagged_as_repeat": True,
+            q1_signals = {
+                "question":         clip.questions[0] if clip.questions else "",
+                "answer":           a1 if not _is_empty(a1) else "[no answer]",
+                "keyword_hit_rate": 0.0 if _is_empty(a1) else _keyword_hit_rate(kf1, a1),
+                "fact_coverage":    0.0 if _is_empty(a1) else _keyword_hit_rate(kf1, a1),
+                "flagged_as_repeat": repeat_q1,
+                "flagged_as_empty":  _is_empty(a1),
+            }
+            q2_signals = {
+                "question":         clip.questions[1] if len(clip.questions) > 1 else "",
+                "answer":           a2 if not _is_empty(a2) else "[no answer]",
+                "keyword_hit_rate": 0.0 if _is_empty(a2) else _keyword_hit_rate(kf2, a2),
+                "fact_coverage":    0.0 if _is_empty(a2) else _keyword_hit_rate(kf2, a2),
+                "flagged_as_repeat": repeat_q2,
+                "flagged_as_empty":  _is_empty(a2),
             }
 
-            if repeat_q1:
-                ret_q1 = dict(REPEAT_RETENTION)
-            else:
-                ret_q1 = evaluate_retention_qna(kf1, a1)
+            clip_signals_list.append((clip_id, "QnA", {
+                "reference": clip.reference_text,
+                "q1":        q1_signals,
+                "q2":        q2_signals,
+            }))
 
-            if repeat_q2:
-                ret_q2 = dict(REPEAT_RETENTION)
-            else:
-                ret_q2 = evaluate_retention_qna(kf2, a2)
+    # ── Step 2: Single combined LLM call ─────────────────────────────────────
+    llm_results_map: dict[str, dict] = {}
 
-            # ── Average Q1+Q2 ─────────────────────────────────────────────────
-            def _avg_score(d1: dict, d2: dict) -> dict:
-                return {
-                    "score": round((d1["score"] + d2["score"]) / 2, 2),
-                    "q1": d1,
-                    "q2": d2,
-                }
+    if clip_signals_list:
+        clip_blocks = "\n\n".join(
+            _build_clip_block(cid, tt, sigs)
+            for cid, tt, sigs in clip_signals_list
+        )
+        prompt = COMBINED_LISTENING_PROMPT.replace("{clip_blocks}", clip_blocks)
+        llm_data = _llm(prompt, max_tokens=1200)
+
+        for item in llm_data.get("clips", []):
+            cid = item.get("clip_id", "")
+            if cid:
+                llm_results_map[cid] = item
+
+    # ── Step 3: Assemble final results ────────────────────────────────────────
+    results = []
+    for resp in clip_responses:
+        clip_id = resp["clip_id"]
+
+        # Use pre-computed early result if available
+        if clip_id in early_results:
+            results.append(early_results[clip_id])
+            continue
+
+        clip   = clip_map.get(clip_id)
+        llm    = llm_results_map.get(clip_id, {})
+        result = {"clip_id": clip_id, "task_type": clip.task_type if clip else "UNKNOWN"}
+
+        # Find signals for this clip
+        sigs = next((s for cid, tt, s in clip_signals_list if cid == clip_id), {})
+
+        if clip and clip.task_type == "REPEAT":
+            transcript = resp.get("transcript", "")
+            result["transcript"] = transcript
+
+            # Accuracy
+            acc_llm  = llm.get("listening_accuracy", {})
+            acc_score = _anchored_score(
+                llm_score  = acc_llm.get("score"),
+                signal_val = sigs.get("keyword_hit_rate", 0.5),
+                low=0.30, high=0.85,
+            )
+            result["listening_accuracy"] = {
+                "score":            acc_score,
+                "keyword_hit_rate": sigs.get("keyword_hit_rate", 0.0),
+                "note":             acc_llm.get("note", ""),
+            }
+
+            # Retention
+            ret_llm  = llm.get("retention", {})
+            ret_score = _anchored_score(
+                llm_score  = ret_llm.get("score"),
+                signal_val = sigs.get("token_coverage", 0.5),
+                low=0.35, high=0.75,
+            )
+            result["retention"] = {
+                "score":          ret_score,
+                "coverage_ratio": sigs.get("token_coverage", 0.0),
+                "note":           ret_llm.get("note", ""),
+            }
+
+            # Sentence reconstruction
+            rec_llm  = llm.get("sentence_reconstruction", {})
+            rec_score = _anchored_score(
+                llm_score  = rec_llm.get("score"),
+                signal_val = sigs.get("structure_similarity", 0.5),
+                low=0.45, high=0.80,
+            )
+            result["sentence_reconstruction"] = {
+                "score":                rec_score,
+                "structure_similarity": sigs.get("structure_similarity", 0.0),
+                "note":                 rec_llm.get("note", ""),
+            }
+
+            print(
+                f"[{clip_id}] REPEAT | "
+                f"accuracy={acc_score} retention={ret_score} reconstruction={rec_score}"
+            )
+
+        elif clip and clip.task_type == "QnA":
+            kf  = clip.key_facts
+            kf1 = kf[0] if len(kf) > 0 else []
+            kf2 = kf[1] if len(kf) > 1 else []
+            a1  = resp.get("answer_q1", "")
+            a2  = resp.get("answer_q2", "")
+
+            q1_sigs = sigs.get("q1", {})
+            q2_sigs = sigs.get("q2", {})
+
+            # Per-question accuracy and retention (from LLM aggregate)
+            acc_llm  = llm.get("listening_accuracy", {})
+            ret_llm  = llm.get("retention", {})
+
+            acc_score = _safe_score(acc_llm.get("score"), default=1)
+            ret_score = _safe_score(ret_llm.get("score"), default=1)
+
+            # Override with 0 if both answers penalised
+            if q1_sigs.get("flagged_as_repeat") and q2_sigs.get("flagged_as_repeat"):
+                acc_score = 0
+                ret_score = 0
 
             result["answers"] = {
                 "q1": {
-                    "question": clip.questions[0],
-                    "transcript": a1,
-                    "flagged_as_repeat": repeat_q1,
-                    "flagged_as_empty": _is_empty(a1),
+                    "question":          clip.questions[0] if clip.questions else "",
+                    "transcript":        a1,
+                    "flagged_as_repeat": q1_sigs.get("flagged_as_repeat", False),
+                    "flagged_as_empty":  q1_sigs.get("flagged_as_empty",  False),
                 },
                 "q2": {
-                    "question": clip.questions[1],
-                    "transcript": a2,
-                    "flagged_as_repeat": repeat_q2,
-                    "flagged_as_empty": _is_empty(a2),
+                    "question":          clip.questions[1] if len(clip.questions) > 1 else "",
+                    "transcript":        a2,
+                    "flagged_as_repeat": q2_sigs.get("flagged_as_repeat", False),
+                    "flagged_as_empty":  q2_sigs.get("flagged_as_empty",  False),
                 },
             }
-            result["listening_accuracy"] = _avg_score(acc_q1, acc_q2)
-            result["retention"]          = _avg_score(ret_q1, ret_q2)
+            result["listening_accuracy"] = {
+                "score": acc_score,
+                "note":  acc_llm.get("note", ""),
+            }
+            result["retention"] = {
+                "score": ret_score,
+                "note":  ret_llm.get("note", ""),
+            }
 
             print(
-                f"[{clip_id}] QnA | "
-                f"accuracy={result['listening_accuracy']['score']} "
-                f"retention={result['retention']['score']} "
-                f"repeat_q1={repeat_q1} repeat_q2={repeat_q2}"
+                f"[{clip_id}] QnA | accuracy={acc_score} retention={ret_score}"
             )
 
         results.append(result)
 
     return results
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _safe_score(val, default: int = 1) -> int:
+    try:
+        s = int(val)
+        return max(0, min(2, s))
+    except (TypeError, ValueError):
+        return default
+
+
+def _anchored_score(
+    llm_score,
+    signal_val: float,
+    low: float,
+    high: float,
+) -> int:
+    """
+    Use signal_val as a hard anchor when LLM would contradict it strongly.
+    low  = threshold below which score=2 is forced down to 1
+    high = threshold above which score=0 is forced up to 1
+    """
+    score = _safe_score(llm_score, default=1)
+    if signal_val < low  and score == 2: score = 1
+    if signal_val > high and score == 0: score = 1
+    return score

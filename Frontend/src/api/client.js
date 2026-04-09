@@ -32,6 +32,26 @@ export async function submitSpeakingResponse(audioBlob, question) {
 }
 
 /**
+ * Submit all speaking responses for batch evaluation
+ * @param {Array} recordings Array of { blob, question }
+ */
+export async function submitSpeakingAllResponses(recordings) {
+  const form = new FormData();
+  recordings.forEach((rec, index) => {
+    form.append(`audio_${index + 1}`, rec.blob, `recording_${index + 1}.wav`);
+    form.append(`question_${index + 1}`, rec.question);
+  });
+
+  const res = await fetch(`${API_BASE}/speaking/evaluate_all`, {
+    method: 'POST',
+    headers: { 'ngrok-skip-browser-warning': 'true' },
+    body: form,
+  });
+  if (!res.ok) throw new Error('Batched speaking evaluation failed');
+  return res.json();
+}
+
+/**
  * Fetch listening clips (4 clips with audio)
  */
 export async function fetchListeningClips() {
@@ -63,6 +83,33 @@ export async function submitListeningResponse(audioBlob, sessionId, clipId, ques
     body: form,
   });
   if (!res.ok) throw new Error('Listening response submission failed');
+  return res.json();
+}
+
+/**
+ * Submit all listening responses at once
+ * @param {string} sessionId
+ * @param {Object} recordings Mapping of clip ID to blobs { "clip_1": blob, "clip_3_q1": blob, etc }
+ */
+export async function submitListeningAllResponses(sessionId, recordings) {
+  const form = new FormData();
+  form.append('session_id', sessionId);
+  
+  // REPEAT clips
+  if (recordings['clip_1']) form.append('clip_1_audio', recordings['clip_1'], 'clip_1.wav');
+  if (recordings['clip_2']) form.append('clip_2_audio', recordings['clip_2'], 'clip_2.wav');
+  // QnA clips
+  if (recordings['clip_3_q1']) form.append('clip_3_q1', recordings['clip_3_q1'], 'c3q1.wav');
+  if (recordings['clip_3_q2']) form.append('clip_3_q2', recordings['clip_3_q2'], 'c3q2.wav');
+  if (recordings['clip_4_q1']) form.append('clip_4_q1', recordings['clip_4_q1'], 'c4q1.wav');
+  if (recordings['clip_4_q2']) form.append('clip_4_q2', recordings['clip_4_q2'], 'c4q2.wav');
+
+  const res = await fetch(`${API_BASE}/listening/respond_all`, {
+    method: 'POST',
+    headers: { 'ngrok-skip-browser-warning': 'true' },
+    body: form,
+  });
+  if (!res.ok) throw new Error('Batched listening response submission failed');
   return res.json();
 }
 

@@ -5,12 +5,28 @@ from app.core.pipeline import run_pipeline
 
 router = APIRouter()
 
-
 @router.post("/evaluate")
 async def evaluate(audio: UploadFile = File(...), question: str = Form("")):
     result = await run_pipeline(audio, question)
     return result
 
+@router.post("/speaking/evaluate_all")
+async def evaluate_all_speaking(
+    audio_1: UploadFile = File(...),
+    question_1: str = Form(...),
+    audio_2: UploadFile = File(...),
+    question_2: str = Form(...),
+    audio_3: UploadFile = File(...),
+    question_3: str = Form(...),
+):
+    from app.core.pipeline import run_session_pipeline
+    audio_files = [
+        (audio_1, question_1),
+        (audio_2, question_2),
+        (audio_3, question_3),
+    ]
+    results = await run_session_pipeline(audio_files)
+    return aggregate_speaking_session(results)
 
 @router.get("/speaking/questions")
 async def get_speaking_questions():

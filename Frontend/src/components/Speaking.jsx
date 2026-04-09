@@ -4,7 +4,7 @@ import RecordButton from './RecordButton';
 import ProgressBar from './ProgressBar';
 import { useTimer } from '../hooks/useTimer';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
-import { fetchSpeakingQuestions, submitSpeakingResponse, aggregateSpeakingResults } from '../api/client';
+import { fetchSpeakingQuestions, submitSpeakingAllResponses } from '../api/client';
 import './Speaking.css';
 
 const PREP_TIME = 60; // 1 minute
@@ -13,7 +13,7 @@ export default function Speaking({ onComplete }) {
   const [questions, setQuestions] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [phase, setPhase] = useState('loading');       // loading | prep | record | submitting | done
-  const [results, setResults] = useState([]);
+  const [recordings, setRecordings] = useState([]);
   const [error, setError] = useState(null);
 
   const { isRecording, formattedRecordingTime, audioBlob, startRecording, stopRecording, clearRecording } = useAudioRecorder();
@@ -55,24 +55,17 @@ export default function Speaking({ onComplete }) {
   // ── Handle recording submission ──────────────────────────
   const handleStopAndSubmit = async () => {
     const blob = await stopRecording();
-    setPhase('submitting');
-    try {
-      const result = await submitSpeakingResponse(blob, questions[currentIndex]);
-      setResults((prev) => [...prev, result]);
-      setPhase('review');
-    } catch (e) {
-      console.error(e);
-      setError('Failed to submit response. Please try again.');
-      setPhase('record');
-    }
+    setRecordings((prev) => [...prev, { blob, question: questions[currentIndex] }]);
+    setPhase('review'); // Just move to review immediately
   };
 
   const handleNext = async () => {
     const nextIndex = currentIndex + 1;
     if (nextIndex >= questions.length) {
-      setPhase('aggregating');
+      setPhase('submitting');
       try {
-        const aggregated = await aggregateSpeakingResults(results);
+        // Evaluate all recordings locally stored
+        const aggregated = await submitSpeakingAllResponses(recordings);
         setPhase('done');
         setTimeout(() => onComplete(aggregated), 800);
       } catch (err) {
@@ -166,16 +159,11 @@ export default function Speaking({ onComplete }) {
           {phase === 'submitting' && (
             <div className="speaking__submitting animate-fade-in text-center">
               <div className="speaking__loader" />
-              <p className="mt-2 text-secondary">Evaluating your response…</p>
+              <p className="mt-2 text-secondary">Evaluating complete session. This may take a moment…</p>
             </div>
           )}
 
-          {phase === 'aggregating' && (
-            <div className="speaking__submitting animate-fade-in text-center">
-              <div className="speaking__loader" />
-              <p className="mt-2 text-secondary">Aggregating session results…</p>
-            </div>
-          )}
+
 
           {phase === 'review' && (
             <div className="speaking__review animate-fade-in text-center">

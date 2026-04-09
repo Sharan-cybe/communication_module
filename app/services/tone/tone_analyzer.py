@@ -60,7 +60,7 @@ def _load_clean_audio(audio_file):
 # Feature 1 + 5 — Pitch features (range, movement, jitter)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _pitch_features(y: np.ndarray, sr: int) -> dict:
+def _pitch_features(y: np.ndarray, sr: int) -> tuple[dict, np.ndarray, np.ndarray]:
     """
     Extract F0 using pyin, remove NaN (unvoiced) frames.
 
@@ -113,7 +113,7 @@ def _pitch_features(y: np.ndarray, sr: int) -> dict:
         "voiced_ratio":  round(voiced_ratio, 3),
         "jitter":        round(jitter, 4),
         "pitch_std":     round(pitch_std, 2),
-    }
+    }, f0, voiced_flag
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -214,7 +214,7 @@ def _pause_features(segments: list, audio_duration: float) -> dict:
 # Feature 4 — Emphasis detection
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _emphasis_features(y: np.ndarray, sr: int) -> dict:
+def _emphasis_features(y: np.ndarray, sr: int, f0: np.ndarray, voiced_flag: np.ndarray) -> dict:
     """
     A frame is 'emphasized' when both pitch z-score > 1.5 AND energy z-score > 1.5.
     Catches stressed syllables and key-word emphasis simultaneously.
@@ -229,12 +229,7 @@ def _emphasis_features(y: np.ndarray, sr: int) -> dict:
 
     e_z = (energy - np.mean(energy)) / max(np.std(energy), 1e-6)
 
-    f0, voiced_flag, _ = librosa.pyin(
-        y,
-        fmin=librosa.note_to_hz("C2"),
-        fmax=librosa.note_to_hz("C7"),
-        sr=sr,
-    )
+    # f0 and voiced_flag are now passed directly to save CPU time
 
     f0_safe  = np.where(np.isnan(f0), 0.0, f0)
     f0_voiced = f0_safe[voiced_flag]
@@ -370,10 +365,10 @@ def analyze_tone(audio_file, whisper_segments: list = None) -> dict:
         dur = librosa.get_duration(y=y, sr=sr)
 
         # ── 5 features ────────────────────────────────────────────────────────
-        pf  = _pitch_features(y, sr)
+        pf, f0, voiced_flag = _pitch_features(y, sr)
         ef  = _energy_features(y)
         psf = _pause_features(whisper_segments or [], dur)
-        emf = _emphasis_features(y, sr)
+        emf = _emphasis_features(y, sr, f0, voiced_flag)
 
         pitch_range    = pf["pitch_range"]
         movement_rate  = pf["movement_rate"]

@@ -5,7 +5,7 @@ import ProgressBar from './ProgressBar';
 import AudioPlayer from './AudioPlayer';
 import { useTimer } from '../hooks/useTimer';
 import { useAudioRecorder } from '../hooks/useAudioRecorder';
-import { fetchListeningClips, submitListeningResponse, aggregateListeningResults } from '../api/client';
+import { fetchListeningClips, submitListeningAllResponses, aggregateListeningResults } from '../api/client';
 import './Listening.css';
 
 const PREP_TIME = 60;
@@ -14,7 +14,7 @@ export default function Listening({ onComplete }) {
   const [session, setSession] = useState(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [phase, setPhase] = useState('loading'); // loading | play | prep | record | submitting | done
-  const [results, setResults] = useState([]);
+  const [recordings, setRecordings] = useState({});
   const [error, setError] = useState(null);
 
   const { isRecording, formattedRecordingTime, stopRecording, startRecording, clearRecording } = useAudioRecorder();
@@ -53,35 +53,28 @@ export default function Listening({ onComplete }) {
 
   const handleStopAndSubmit = async () => {
     const blob = await stopRecording();
-    setPhase('submitting');
-    try {
-      const result = await submitListeningResponse(
-        blob,
-        session.session_id,
-        currentClip.clip_id,
-        0 // Assuming single question index for now
-      );
-      
-      setResults((prev) => [...prev, result]);
-      setPhase('review');
-    } catch (e) {
-      console.error(e);
-      setError('Failed to submit response.');
-      setPhase('record');
+    
+    let key = currentClip.clip_id;
+    if (currentClip.task_type === 'QnA') {
+      key = `${currentClip.clip_id}_q1`;
     }
+    
+    setRecordings((prev) => ({ ...prev, [key]: blob }));
+    setPhase('review');
   };
 
   const handleNext = async () => {
     const nextIndex = currentIndex + 1;
     if (nextIndex >= session.clips.length) {
-      setPhase('aggregating');
+      setPhase('submitting');
       try {
-        const finalAggregate = await aggregateListeningResults(results);
+        const { clip_results } = await submitListeningAllResponses(session.session_id, recordings);
+        const finalAggregate = await aggregateListeningResults(clip_results);
         setPhase('done');
         setTimeout(() => onComplete(finalAggregate), 800);
       } catch (e) {
         console.error(e);
-        setError('Failed to aggregate results.');
+        setError('Failed to process listening session.');
         setPhase('review');
       }
     } else {
@@ -195,11 +188,11 @@ export default function Listening({ onComplete }) {
             </div>
           )}
 
-          {(phase === 'submitting' || phase === 'aggregating') && (
+          {phase === 'submitting' && (
             <div className="listening__submitting animate-fade-in text-center">
               <div className="listening__loader" />
               <p className="mt-2 text-secondary">
-                {phase === 'submitting' ? 'Processing clip...' : 'Calculating final scores...'}
+                Evaluating complete session. This may take a moment...
               </p>
             </div>
           )}
