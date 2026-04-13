@@ -146,12 +146,23 @@ def aggregate_listening_scores(clip_results: list) -> dict:
     }
 
     for clip in clip_results:
+        task_type = clip.get("task_type", "") if isinstance(clip, dict) else ""
         if not isinstance(clip, dict) or "error" in clip:
+            param_01["listening_accuracy"].append(0.0)
+            param_01["retention"].append(0.0)
+            if task_type == "REPEAT":
+                param_01["sentence_reconstruction"].append(0.0)
             continue
+            
         for param, fn in converters.items():
+            if param == "sentence_reconstruction" and task_type != "REPEAT":
+                continue
+                
             raw = clip.get(param)
             if isinstance(raw, dict) and "score" in raw:
                 param_01[param].append(fn(raw))
+            else:
+                param_01[param].append(0.0)
 
     # Average per parameter
     avgs_01: dict[str, float] = {}

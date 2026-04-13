@@ -77,11 +77,9 @@ async def respond_all(
     # REPEAT clips — one audio file each
     clip_1_audio: UploadFile = File(None),
     clip_2_audio: UploadFile = File(None),
-    # QnA clips — two audio files each (one per question)
+    # QnA clips — one audio file each
     clip_3_q1:   UploadFile = File(None),
-    clip_3_q2:   UploadFile = File(None),
     clip_4_q1:   UploadFile = File(None),
-    clip_4_q2:   UploadFile = File(None),
 ):
     """
     Submit all candidate audio responses in one request.
@@ -90,10 +88,8 @@ async def respond_all(
       session_id   : from /clips response
       clip_1_audio : audio for REPEAT clip 1
       clip_2_audio : audio for REPEAT clip 2
-      clip_3_q1    : audio answering question 1 of QnA clip 3
-      clip_3_q2    : audio answering question 2 of QnA clip 3
-      clip_4_q1    : audio answering question 1 of QnA clip 4
-      clip_4_q2    : audio answering question 2 of QnA clip 4
+      clip_3_q1    : audio answering question of QnA clip 3
+      clip_4_q1    : audio answering question of QnA clip 4
 
     All clips are transcribed and evaluated together.
 
@@ -102,8 +98,8 @@ async def respond_all(
     clip_audios = {
         "clip_1": clip_1_audio,
         "clip_2": clip_2_audio,
-        "clip_3": {"q1": clip_3_q1, "q2": clip_3_q2},
-        "clip_4": {"q1": clip_4_q1, "q2": clip_4_q2},
+        "clip_3": {"q1": clip_3_q1},
+        "clip_4": {"q1": clip_4_q1},
     }
 
     clip_results = await submit_all_responses(session_id, clip_audios)

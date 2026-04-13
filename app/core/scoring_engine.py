@@ -417,11 +417,20 @@ def aggregate_speaking_session(results: list) -> dict:
     param_details:   dict[str, list] = {k: [] for k in scorers}
 
     for r in results:
+        if r.get("status") == "no_valid_speech" or "error" in r:
+            for key in scorers:
+                param_scores_01[key].append(0.0)
+                param_details[key].append({"score": 0, "note": "No valid speech detected"})
+            continue
+
         details = r.get("details", {})
         for key, fn in scorers.items():
             if key in details:
                 param_scores_01[key].append(fn(details[key]))
                 param_details[key].append(details[key])
+            else:
+                param_scores_01[key].append(0.0)
+                param_details[key].append({"score": 0, "note": "No valid speech detected"})
 
     def _avg(lst): return sum(lst) / len(lst) if lst else None
 

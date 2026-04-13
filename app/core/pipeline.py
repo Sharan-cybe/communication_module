@@ -25,6 +25,42 @@ from app.services.grammar.llama_service import evaluate_speaking_session
 from app.core.scoring_engine import aggregate_scores
 
 
+def is_valid_speech(text: str, segments: list, words: list) -> bool:
+    if not text or not segments:
+        print(f"INVALID SPEECH: Empty text or segments")
+        return False
+        
+    word_count = len(words)
+    duration = segments[-1].get("end", 0.0)
+    
+    avg_no_speech = sum(s.get("no_speech_prob", 0.0) for s in segments) / len(segments)
+    avg_logprob = sum(s.get("avg_logprob", 0.0) for s in segments) / len(segments)
+    
+    if avg_no_speech > 0.5:
+        print(f"INVALID SPEECH: Rule 1 Failed | avg_no_speech ({avg_no_speech:.3f}) > 0.5 | Text: '{text}'")
+        return False
+        
+    if word_count < 8:
+        print(f"INVALID SPEECH: Rule 2 Failed | word_count ({word_count}) < 8 | Text: '{text}'")
+        return False
+        
+    if avg_logprob < -1.2:
+        print(f"INVALID SPEECH: Rule 3 Failed | avg_logprob ({avg_logprob:.3f}) < -1.2 | Text: '{text}'")
+        return False
+        
+    if duration > 0.0 and word_count > duration * 3:
+        print(f"INVALID SPEECH: Rule 4 Failed | hallucination density word_count ({word_count}) > duration * 3 ({duration * 3:.1f}) | Text: '{text}'")
+        return False
+        
+    if text.lower().strip() in ["thank you", "thanks", "yes", "okay"]:
+        print(f"INVALID SPEECH: Rule 5 Failed | known hallucination | Text: '{text}'")
+        return False
+        
+    print(f"VALID SPEECH: Passed all checks! | Text: '{text}'")
+    return True
+
+
+
 class BufferedFile:
     def __init__(self, data: bytes):
         self.file = io.BytesIO(data)
@@ -55,23 +91,20 @@ async def run_pipeline(audio_file, question: str) -> dict:
     print(f"TRANSCRIPT ({len(transcript)} chars): {transcript[:120]}…")
     print(f"SEGMENTS: {len(segments)} | WORDS: {len(words)}")
 
-    if not transcript:
-        print("WARNING: Whisper returned empty transcript — audio may be silent or too short")
+    if not is_valid_speech(transcript, segments, words):
+        return {
+            "status": "no_valid_speech",
+            "message": "No valid speech detected. Please provide a complete answer.",
+            "scores": {
+                "pronunciation": 0,
+                "fluency": 0,
+                "tone": 0,
+                "grammar": 0,
+                "comprehension": 0
+            }
+        }
 
     def _run_sync_evals():
-        # ── No-speech fast-path ───────────────────────────────────────────────
-        if not transcript or len(transcript.strip()) < 2:
-            return aggregate_scores(
-                pronunciation = {"score": 0, "clarity": 0.0, "consistency": 0.0,
-                                 "composite_score": 0.0, "note": "No speech detected"},
-                fluency       = {"score": 0, "wpm": 0.0, "filler_rate": 0.0,
-                                 "pauses": {"count": 0, "avg_duration": 0.0}, "note": "No speech detected"},
-                tone          = {"score": 0, "pitch_variation": 0.0, "energy_variation": 0.0,
-                                 "note": "No speech detected"},
-                grammar       = {"score": 0, "mistakes": [], "note": "No speech detected"},
-                comprehension = {"score": 0, "relevance": 0.0, "completeness": 0.0,
-                                 "note": "No speech detected"},
-            )
 
         local_fluency = BufferedFile(audio_bytes)
         local_tone    = BufferedFile(audio_bytes)
@@ -111,6 +144,8 @@ async def run_pipeline(audio_file, question: str) -> dict:
             llm_results = evaluate_speaking_session([{"question": question, "answer": transcript}])
             grammar       = llm_results[0]["grammar"]
             comprehension = llm_results[0]["comprehension"]
+            print(f"GRAMMAR: score={grammar.get('score')} mistakes={len(grammar.get('mistakes', []))}")
+            print(f"COMPREHENSION: score={comprehension.get('score')} relevance={comprehension.get('relevance')} completeness={comprehension.get('completeness')}")
         except Exception as e:
             print(f"LLM EVAL ERROR: {e}")
             grammar       = {"score": 1, "mistakes": [], "note": "Could not evaluate grammar"}
@@ -170,17 +205,27 @@ async def run_session_pipeline(
             audio_bytes_list.append(b"")
 
     # ── Step 2: Combined LLM call for grammar + comprehension ─────────────────
-    qa_pairs = [{"question": t["question"], "answer": t["text"]} for t in transcriptions]
+    qa_pairs = []
+    valid_indices = []
+    for i, t in enumerate(transcriptions):
+        if is_valid_speech(t["text"], t["segments"], t["words"]):
+            qa_pairs.append({"question": t["question"], "answer": t["text"]})
+            valid_indices.append(i)
 
-    try:
-        llm_results = await asyncio.to_thread(evaluate_speaking_session, qa_pairs)
-    except Exception as e:
-        print(f"COMBINED LLM ERROR: {e}")
-        llm_results = [
-            {"grammar": {"score": 1, "mistakes": [], "note": "Could not evaluate"},
-             "comprehension": {"score": 1, "relevance": 0.5, "completeness": 0.5, "note": "Could not evaluate"}}
-            for _ in transcriptions
-        ]
+    # Initialize with default fallback for all, then overwrite valid ones
+    llm_results = [
+        {"grammar": {"score": 1, "mistakes": [], "note": "Could not evaluate"},
+         "comprehension": {"score": 1, "relevance": 0.5, "completeness": 0.5, "note": "Could not evaluate"}}
+        for _ in transcriptions
+    ]
+
+    if qa_pairs:
+        try:
+            actual_llm_results = await asyncio.to_thread(evaluate_speaking_session, qa_pairs)
+            for valid_idx, llm_res in zip(valid_indices, actual_llm_results):
+                llm_results[valid_idx] = llm_res
+        except Exception as e:
+            print(f"COMBINED LLM ERROR: {e}")
 
     # ── Step 3: CPU-only evals per question + aggregate ──────────────────────
     results = []
@@ -190,20 +235,18 @@ async def run_session_pipeline(
         words      = td["words"]
         question   = td["question"]
 
-        if not transcript or len(transcript.strip()) < 2:
-            result = aggregate_scores(
-                pronunciation = {"score": 0, "clarity": 0.0, "consistency": 0.0,
-                                 "composite_score": 0.0, "note": "No speech detected"},
-                fluency       = {"score": 0, "wpm": 0.0, "filler_rate": 0.0,
-                                 "pauses": {"count": 0, "avg_duration": 0.0}, "note": "No speech detected"},
-                tone          = {"score": 0, "pitch_variation": 0.0, "energy_variation": 0.0,
-                                 "note": "No speech detected"},
-                grammar       = {"score": 0, "mistakes": [], "note": "No speech detected"},
-                comprehension = {"score": 0, "relevance": 0.0, "completeness": 0.0,
-                                 "note": "No speech detected"},
-            )
-            result["transcript"] = transcript
-            results.append(result)
+        if not is_valid_speech(transcript, segments, words):
+            results.append({
+                "status": "no_valid_speech",
+                "message": "No valid speech detected. Please provide a complete answer.",
+                "scores": {
+                    "pronunciation": 0,
+                    "fluency": 0,
+                    "tone": 0,
+                    "grammar": 0,
+                    "comprehension": 0
+                }
+            })
             continue
 
         local_fluency = BufferedFile(audio_bytes)
@@ -238,6 +281,8 @@ async def run_session_pipeline(
 
         grammar       = llm_results[i]["grammar"]
         comprehension = llm_results[i]["comprehension"]
+        print(f"GRAMMAR Q{i+1}: score={grammar.get('score')} mistakes={len(grammar.get('mistakes', []))}")
+        print(f"COMPREHENSION Q{i+1}: score={comprehension.get('score')} relevance={comprehension.get('relevance')} completeness={comprehension.get('completeness')}")
 
         result = aggregate_scores(
             pronunciation=pronunciation,

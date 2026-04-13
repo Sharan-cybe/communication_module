@@ -143,19 +143,19 @@ SCORING RULES:
 SCORE SCALE (per parameter): 0 | 1 | 2
 
 LISTENING ACCURACY:
-  2 = ≥80% key facts captured AND content is correct
-  1 = 40–79% OR 1–2 minor errors
-  0 = <40% OR major factual errors OR no answer
+  2 = ≥70% key facts captured AND content is correct
+  1 = 30–69% OR 1–2 minor errors
+  0 = <30% OR major factual errors OR no answer
 
 RETENTION:
-  2 = ≥75% token/fact coverage — full or near-full recall
-  1 = 40–74% — roughly half recalled
-  0 = <40% — major portions missing
+  2 = ≥70% token/fact coverage — full or near-full recall
+  1 = 30–69% — roughly half recalled
+  0 = <30% — major portions missing
 
 SENTENCE RECONSTRUCTION (REPEAT clips only):
-  2 = ≥80% structure similarity — matches original pattern well
-  1 = 50–79% — mostly correct with notable structural differences
-  0 = <50% — broken structure or fragments
+  2 = ≥70% structure similarity — matches original pattern well
+  1 = 40–69% — mostly correct with notable structural differences
+  0 = <40% — broken structure or fragments
 
 ---
 
@@ -189,7 +189,7 @@ Return ONLY valid JSON — no markdown, no explanation:
 }}
 
 For QnA clips, sentence_reconstruction score must be null (not evaluated).
-For each QnA clip, listening_accuracy and retention scores should reflect the average quality of both Q+A answers combined.
+For each QnA clip, listening_accuracy and retention scores should reflect the quality of the answer to the provided question.
 Return one object per clip in the same order as the input.
 """
 
@@ -207,16 +207,15 @@ def _build_clip_block(clip_id: str, task_type: str, clip_signals: dict) -> str:
 
     elif task_type == "QnA":
         lines.append(f"  Reference passage: \"{clip_signals['reference']}\"")
-        for qi in (1, 2):
-            qa = clip_signals.get(f"q{qi}", {})
-            lines.append(f"  Q{qi}: {qa.get('question', '')}")
-            lines.append(f"    Answer:            \"{qa.get('answer', '[no answer]')}\"")
-            lines.append(f"    keyword_hit_rate:  {qa.get('keyword_hit_rate', 0.0):.0%}")
-            lines.append(f"    fact_coverage:     {qa.get('fact_coverage', 0.0):.0%}")
-            if qa.get("flagged_as_repeat"):
-                lines.append(f"    ⚠ flagged as clip repeat — penalise this answer")
-            if qa.get("flagged_as_empty"):
-                lines.append(f"    ⚠ no answer provided")
+        qa = clip_signals.get("q1", {})
+        lines.append(f"  Q1: {qa.get('question', '')}")
+        lines.append(f"    Answer:            \"{qa.get('answer', '[no answer]')}\"")
+        lines.append(f"    keyword_hit_rate:  {qa.get('keyword_hit_rate', 0.0):.0%}")
+        lines.append(f"    fact_coverage:     {qa.get('fact_coverage', 0.0):.0%}")
+        if qa.get("flagged_as_repeat"):
+            lines.append(f"    ⚠ flagged as clip repeat — penalise this answer")
+        if qa.get("flagged_as_empty"):
+            lines.append(f"    ⚠ no answer provided")
 
     return "\n".join(lines)
 
@@ -293,22 +292,19 @@ def evaluate_all_responses(session_clips: list, clip_responses: list) -> list:
 
         elif clip.task_type == "QnA":
             a1 = resp.get("answer_q1", "")
-            a2 = resp.get("answer_q2", "")
             kf  = clip.key_facts
             kf1 = kf[0] if len(kf) > 0 else []
-            kf2 = kf[1] if len(kf) > 1 else []
 
             repeat_q1 = (not _is_empty(a1)) and _is_clip_repeat(clip.reference_text, a1)
-            repeat_q2 = (not _is_empty(a2)) and _is_clip_repeat(clip.reference_text, a2)
 
-            # If both answers are empty
-            if _is_empty(a1) and _is_empty(a2):
+            # If answer is empty
+            if _is_empty(a1):
                 early_results[clip_id] = {
                     "clip_id":            clip_id,
                     "task_type":          "QnA",
-                    "listening_accuracy": {**EMPTY_PENALTY, "q1": EMPTY_PENALTY, "q2": EMPTY_PENALTY,
+                    "listening_accuracy": {**EMPTY_PENALTY, "q1": EMPTY_PENALTY,
                                            "score": 0},
-                    "retention":          {**EMPTY_PENALTY, "q1": EMPTY_PENALTY, "q2": EMPTY_PENALTY,
+                    "retention":          {**EMPTY_PENALTY, "q1": EMPTY_PENALTY,
                                            "score": 0},
                 }
                 continue
@@ -321,19 +317,10 @@ def evaluate_all_responses(session_clips: list, clip_responses: list) -> list:
                 "flagged_as_repeat": repeat_q1,
                 "flagged_as_empty":  _is_empty(a1),
             }
-            q2_signals = {
-                "question":         clip.questions[1] if len(clip.questions) > 1 else "",
-                "answer":           a2 if not _is_empty(a2) else "[no answer]",
-                "keyword_hit_rate": 0.0 if _is_empty(a2) else _keyword_hit_rate(kf2, a2),
-                "fact_coverage":    0.0 if _is_empty(a2) else _keyword_hit_rate(kf2, a2),
-                "flagged_as_repeat": repeat_q2,
-                "flagged_as_empty":  _is_empty(a2),
-            }
 
             clip_signals_list.append((clip_id, "QnA", {
                 "reference": clip.reference_text,
                 "q1":        q1_signals,
-                "q2":        q2_signals,
             }))
 
     # ── Step 2: Single combined LLM call ─────────────────────────────────────
@@ -372,6 +359,8 @@ def evaluate_all_responses(session_clips: list, clip_responses: list) -> list:
         if clip and clip.task_type == "REPEAT":
             transcript = resp.get("transcript", "")
             result["transcript"] = transcript
+            result["reference_text"] = clip.reference_text
+            result["key_facts"] = clip.key_facts
 
             # Accuracy
             acc_llm  = llm.get("listening_accuracy", {})
@@ -420,12 +409,9 @@ def evaluate_all_responses(session_clips: list, clip_responses: list) -> list:
         elif clip and clip.task_type == "QnA":
             kf  = clip.key_facts
             kf1 = kf[0] if len(kf) > 0 else []
-            kf2 = kf[1] if len(kf) > 1 else []
             a1  = resp.get("answer_q1", "")
-            a2  = resp.get("answer_q2", "")
 
             q1_sigs = sigs.get("q1", {})
-            q2_sigs = sigs.get("q2", {})
 
             # Per-question accuracy and retention (from LLM aggregate)
             acc_llm  = llm.get("listening_accuracy", {})
@@ -435,23 +421,19 @@ def evaluate_all_responses(session_clips: list, clip_responses: list) -> list:
             ret_score = _safe_score(ret_llm.get("score"), default=1)
 
             # Override with 0 if both answers penalised
-            if q1_sigs.get("flagged_as_repeat") and q2_sigs.get("flagged_as_repeat"):
+            if q1_sigs.get("flagged_as_repeat"):
                 acc_score = 0
                 ret_score = 0
 
+            result["reference_text"] = clip.reference_text
             result["answers"] = {
                 "q1": {
                     "question":          clip.questions[0] if clip.questions else "",
                     "transcript":        a1,
+                    "expected_facts":    kf1,
                     "flagged_as_repeat": q1_sigs.get("flagged_as_repeat", False),
                     "flagged_as_empty":  q1_sigs.get("flagged_as_empty",  False),
-                },
-                "q2": {
-                    "question":          clip.questions[1] if len(clip.questions) > 1 else "",
-                    "transcript":        a2,
-                    "flagged_as_repeat": q2_sigs.get("flagged_as_repeat", False),
-                    "flagged_as_empty":  q2_sigs.get("flagged_as_empty",  False),
-                },
+                }
             }
             result["listening_accuracy"] = {
                 "score": acc_score,
@@ -463,7 +445,8 @@ def evaluate_all_responses(session_clips: list, clip_responses: list) -> list:
             }
 
             print(
-                f"[{clip_id}] QnA | accuracy={acc_score} retention={ret_score}"
+                f"[{clip_id}] QnA | accuracy={acc_score} retention={ret_score} | "
+                f"expected_facts: {kf1}"
             )
 
         results.append(result)

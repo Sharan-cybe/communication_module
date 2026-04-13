@@ -96,26 +96,18 @@ async def submit_all_responses(
             })
         elif clip.task_type == "QnA":
             audio_q1 = audio.get("q1") if isinstance(audio, dict) else audio
-            audio_q2 = audio.get("q2") if isinstance(audio, dict) else None
 
             td1 = {"text": "", "timestamps": [], "words": []}
-            td2 = {"text": "", "timestamps": [], "words": []}
 
             if audio_q1:
                 audio_q1.file.seek(0)
                 td1 = await transcribe_audio(audio_q1)
-            if audio_q2:
-                audio_q2.file.seek(0)
-                td2 = await transcribe_audio(audio_q2)
 
             clip_responses.append({
                 "clip_id":    cid,
                 "answer_q1":  td1.get("text", "").strip(),
-                "answer_q2":  td2.get("text", "").strip(),
                 "segments_q1": td1.get("timestamps", []),
                 "words_q1":    td1.get("words", []),
-                "segments_q2": td2.get("timestamps", []),
-                "words_q2":    td2.get("words", []),
             })
 
     return await asyncio.to_thread(evaluate_all_responses, session_clips, clip_responses)
@@ -147,15 +139,11 @@ async def evaluate_clip_response(
             "whisper_segments": td.get("timestamps", []),
             "whisper_words": td.get("words", []),
         })
-    else:
         responses.append({
             "clip_id": clip_id,
             "answer_q1": td.get("text", "").strip(),
-            "answer_q2": "",
             "segments_q1": td.get("timestamps", []),
             "words_q1": td.get("words", []),
-            "segments_q2": [],
-            "words_q2": [],
         })
 
     results = await asyncio.to_thread(evaluate_all_responses, session_clips, responses)
