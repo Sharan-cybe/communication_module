@@ -11,6 +11,7 @@ const PREP_TIME = 60; // 1 minute
 
 export default function Speaking({ onComplete }) {
   const [questions, setQuestions] = useState([]);
+  const [sessionId, setSessionId] = useState(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [phase, setPhase] = useState('loading');       // loading | prep | record | submitting | done
   const [recordings, setRecordings] = useState([]);
@@ -29,23 +30,18 @@ export default function Speaking({ onComplete }) {
     let cancelled = false;
     (async () => {
       try {
-        const q = await fetchSpeakingQuestions();
+        const data = await fetchSpeakingQuestions();
         if (!cancelled) {
-          setQuestions(q);
+          setSessionId(data.session_id);
+          setQuestions(data.questions);
           setPhase('prep');
           timer.start();
         }
       } catch (e) {
         console.error(e);
         if (!cancelled) {
-          // Fallback
-          setQuestions([
-            'Tell me about yourself.',
-            'Describe a hobby or activity you enjoy and why.',
-            'How has technology changed the way people communicate?',
-          ]);
-          setPhase('prep');
-          timer.start();
+          setError('Failed to connect to the server to get questions. Please refresh or check your connection.');
+          setPhase('review'); // Just show the error
         }
       }
     })();
@@ -64,8 +60,8 @@ export default function Speaking({ onComplete }) {
     if (nextIndex >= questions.length) {
       setPhase('submitting');
       try {
-        // Evaluate all recordings locally stored
-        const aggregated = await submitSpeakingAllResponses(recordings);
+        // Evaluate all recordings locally stored against the active session
+        const aggregated = await submitSpeakingAllResponses(sessionId, recordings);
         setPhase('done');
         setTimeout(() => onComplete(aggregated), 800);
       } catch (err) {

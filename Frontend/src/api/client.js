@@ -8,8 +8,7 @@ export async function fetchSpeakingQuestions() {
     headers: { 'ngrok-skip-browser-warning': 'true' }
   });
   if (!res.ok) throw new Error('Failed to fetch speaking questions');
-  const data = await res.json();
-  return data.questions;
+  return await res.json();
 }
 
 /**
@@ -17,10 +16,11 @@ export async function fetchSpeakingQuestions() {
  * @param {Blob} audioBlob  WAV audio blob
  * @param {string} question The question that was asked
  */
-export async function submitSpeakingResponse(audioBlob, question) {
+export async function submitSpeakingResponse(audioBlob, sessionId, questionIndex) {
   const form = new FormData();
   form.append('audio', audioBlob, 'recording.wav');
-  form.append('question', question);
+  form.append('session_id', sessionId);
+  form.append('question_index', questionIndex.toString());
 
   const res = await fetch(`${API_BASE}/evaluate`, {
     method: 'POST',
@@ -35,11 +35,11 @@ export async function submitSpeakingResponse(audioBlob, question) {
  * Submit all speaking responses for batch evaluation
  * @param {Array} recordings Array of { blob, question }
  */
-export async function submitSpeakingAllResponses(recordings) {
+export async function submitSpeakingAllResponses(sessionId, recordings) {
   const form = new FormData();
+  form.append('session_id', sessionId);
   recordings.forEach((rec, index) => {
     form.append(`audio_${index + 1}`, rec.blob, `recording_${index + 1}.wav`);
-    form.append(`question_${index + 1}`, rec.question);
   });
 
   const res = await fetch(`${API_BASE}/speaking/evaluate_all`, {
