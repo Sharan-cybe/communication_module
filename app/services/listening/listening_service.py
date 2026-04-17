@@ -426,6 +426,8 @@ def evaluate_all_responses(session_clips: list, clip_responses: list) -> list:
                 ret_score = 0
 
             result["reference_text"] = clip.reference_text
+            result["transcript"] = a1
+            result["key_facts"] = kf1
             result["answers"] = {
                 "q1": {
                     "question":          clip.questions[0] if clip.questions else "",

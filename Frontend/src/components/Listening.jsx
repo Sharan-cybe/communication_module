@@ -10,7 +10,7 @@ import './Listening.css';
 
 const PREP_TIME = 60;
 
-export default function Listening({ onComplete }) {
+export default function Listening({ interviewId, setInterviewId, onComplete }) {
   const [session, setSession] = useState(null);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [phase, setPhase] = useState('loading'); // loading | play | prep | record | submitting | done
@@ -30,9 +30,12 @@ export default function Listening({ onComplete }) {
     let cancelled = false;
     (async () => {
       try {
-        const data = await fetchListeningClips();
+        const data = await fetchListeningClips(interviewId);
         if (!cancelled) {
           setSession(data);
+          if (data.interview_id) {
+            setInterviewId(data.interview_id);
+          }
           setPhase('play');
         }
       } catch (e) {

@@ -3,8 +3,12 @@ const API_BASE = 'https://eloise-frizzlier-unradically.ngrok-free.dev/api/v1';
 /**
  * Fetch 3 speaking questions (1 static + 2 dynamic)
  */
-export async function fetchSpeakingQuestions() {
-  const res = await fetch(`${API_BASE}/speaking/questions`, {
+export async function fetchSpeakingQuestions(interviewId = null) {
+  let url = `${API_BASE}/speaking/questions`;
+  if (interviewId) {
+    url += `?interview_id=${encodeURIComponent(interviewId)}`;
+  }
+  const res = await fetch(url, {
     headers: { 'ngrok-skip-browser-warning': 'true' }
   });
   if (!res.ok) throw new Error('Failed to fetch speaking questions');
@@ -54,8 +58,12 @@ export async function submitSpeakingAllResponses(sessionId, recordings) {
 /**
  * Fetch listening clips (4 clips with audio)
  */
-export async function fetchListeningClips() {
-  const res = await fetch(`${API_BASE}/listening/clips`, {
+export async function fetchListeningClips(interviewId = null) {
+  let url = `${API_BASE}/listening/clips`;
+  if (interviewId) {
+    url += `?interview_id=${encodeURIComponent(interviewId)}`;
+  }
+  const res = await fetch(url, {
     headers: { 'ngrok-skip-browser-warning': 'true' }
   });
   if (!res.ok) throw new Error('Failed to fetch listening clips');

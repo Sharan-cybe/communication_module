@@ -9,7 +9,7 @@ import './Speaking.css';
 
 const PREP_TIME = 60; // 1 minute
 
-export default function Speaking({ onComplete }) {
+export default function Speaking({ interviewId, setInterviewId, onComplete }) {
   const [questions, setQuestions] = useState([]);
   const [sessionId, setSessionId] = useState(null);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -30,10 +30,13 @@ export default function Speaking({ onComplete }) {
     let cancelled = false;
     (async () => {
       try {
-        const data = await fetchSpeakingQuestions();
+        const data = await fetchSpeakingQuestions(interviewId);
         if (!cancelled) {
           setSessionId(data.session_id);
           setQuestions(data.questions);
+          if (data.interview_id) {
+            setInterviewId(data.interview_id);
+          }
           setPhase('prep');
           timer.start();
         }

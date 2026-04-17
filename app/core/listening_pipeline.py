@@ -17,27 +17,37 @@ from app.services.listening.listening_service import evaluate_all_responses
 from app.services.listening.listening_scoring_engine import aggregate_listening_scores
 from app.services.listening.content_bank import get_session_clips, ListeningClip
 from app.services.tts.tts_service import synthesize_text
+from app.db.db_service import save_listening_session, save_listening_clip_result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # In-memory session store  {session_id → list[ListeningClip]}
 # ─────────────────────────────────────────────────────────────────────────────
 
-SESSION_STORE: dict[str, list[ListeningClip]] = {}
+SESSION_STORE: dict[str, dict] = {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 1 — Generate clips for a session
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def generate_listening_clips() -> dict:
+async def generate_listening_clips(interview_id: str = None) -> dict:
+    print(f"[API] Starting listening session. interview_id received: {interview_id}")
     """
     Pick 2 REPEAT + 2 QnA clips randomly, synthesise audio via Azure TTS,
     return base64 audio + metadata. Creates and stores a session.
     """
+    # Generate interview_id if not provided by frontend
+    if not interview_id:
+        interview_id = str(uuid.uuid4())
+        print(f"[API] Generated new interview_id: {interview_id}")
+
     clips      = get_session_clips()
     session_id = str(uuid.uuid4())
-    SESSION_STORE[session_id] = clips
+    SESSION_STORE[session_id] = {
+        "clips": clips,
+        "interview_id": interview_id
+    }
 
     output = []
     for clip in clips:
@@ -55,7 +65,11 @@ async def generate_listening_clips() -> dict:
             "questions": clip.questions,
         })
 
-    return {"session_id": session_id, "clips": output}
+    return {
+        "session_id": session_id, 
+        "clips": output,
+        "interview_id": interview_id
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -69,7 +83,9 @@ async def submit_all_responses(
     """
     Bulk submission: Transcribe all submitted audio files, then evaluate.
     """
-    session_clips = SESSION_STORE.get(session_id)
+    session_data = SESSION_STORE.get(session_id, {})
+    session_clips = session_data.get("clips")
+    interview_id = session_data.get("interview_id")
     if not session_clips:
         return [{"error": "Invalid or expired session_id"}]
 
@@ -110,7 +126,25 @@ async def submit_all_responses(
                 "words_q1":    td1.get("words", []),
             })
 
-    return await asyncio.to_thread(evaluate_all_responses, session_clips, clip_responses)
+    results = await asyncio.to_thread(evaluate_all_responses, session_clips, clip_responses)
+
+    # ── Aggregate and Save to Supabase ────────────────────────────────────────
+    try:
+        # Immediate aggregation for batch submission
+        aggregated = aggregate_listening_scores(results)
+        
+        # Save session with actual scores instead of placeholders
+        save_listening_session(session_id, aggregated, interview_id)
+        
+        # Save individual clips
+        for clip_result in results:
+            save_listening_clip_result(session_id, clip_result, interview_id)
+            
+        print(f"[{session_id}] Batch submission evaluated and saved to DB.")
+    except Exception as e:
+        print(f"[DB] Non-blocking save error: {e}")
+
+    return results
 
 
 async def evaluate_clip_response(
@@ -122,7 +156,9 @@ async def evaluate_clip_response(
     """
     Legacy evaluator (one-by-one) for the current frontend/endpoint.
     """
-    session_clips = SESSION_STORE.get(session_id)
+    session_data = SESSION_STORE.get(session_id, {})
+    session_clips = session_data.get("clips")
+    interview_id = session_data.get("interview_id")
     if not session_clips: return {"error": "Invalid session_id"}
 
     clip = next((c for c in session_clips if c.clip_id == clip_id), None)
@@ -147,12 +183,39 @@ async def evaluate_clip_response(
         })
 
     results = await asyncio.to_thread(evaluate_all_responses, session_clips, responses)
-    return next((r for r in results if r["clip_id"] == clip_id), {"error": "Evaluation failed"})
+    result = next((r for r in results if r["clip_id"] == clip_id), {"error": "Evaluation failed"})
+    
+    # ── Save clip result to Supabase ─────────────────────────────────────────
+    if "error" not in result:
+        try:
+            # Ensure session exists in DB (placeholder scores until aggregation)
+            save_listening_session(session_id, {
+                "listening_score": None, "listening_score_10": None,
+                "summary": {"verdict": "in_progress", "strengths": [], "improvements": []},
+                "parameters": {},
+            }, interview_id)
+            save_listening_clip_result(session_id, result, interview_id)
+        except Exception as e:
+            print(f"[DB] Non-blocking save error: {e}")
+
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Step 3 — Aggregate final score
 # ─────────────────────────────────────────────────────────────────────────────
 
-def aggregate_session(clip_results: list) -> dict:
-    return aggregate_listening_scores(clip_results)
+def aggregate_session(clip_results: list, session_id: str = None) -> dict:
+    result = aggregate_listening_scores(clip_results)
+
+    # ── Update session with final aggregated scores ───────────────────────────
+    if session_id:
+        try:
+            # Retrieve interview_id if available
+            session_data = SESSION_STORE.get(session_id, {})
+            interview_id = session_data.get("interview_id")
+            save_listening_session(session_id, result, interview_id)
+        except Exception as e:
+            print(f"[DB] Non-blocking save error: {e}")
+
+    return result

@@ -30,7 +30,7 @@ router = APIRouter()
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.get("/clips")
-async def get_clips():
+async def get_clips(interview_id: str = None):
     """
     Start a new listening session.
     Returns 4 random clips (2 REPEAT + 2 QnA) with TTS audio as base64.
@@ -46,7 +46,7 @@ async def get_clips():
       ]
     }
     """
-    return await generate_listening_clips()
+    return await generate_listening_clips(interview_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -111,7 +111,10 @@ async def respond_all(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @router.post("/aggregate")
-async def aggregate(clip_results: list = Body(...)):
+async def aggregate(
+    clip_results: list = Body(...),
+    session_id: str = None, # Passed as optional query param
+):
     """
     Compute the final listening score from all 4 clip results.
 
@@ -129,4 +132,4 @@ async def aggregate(clip_results: list = Body(...)):
       "parameters": { ... }
     }
     """
-    return aggregate_session(clip_results)
+    return aggregate_session(clip_results, session_id=session_id)

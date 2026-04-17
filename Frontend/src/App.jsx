@@ -9,6 +9,7 @@ function App() {
   const [phase, setPhase] = useState('welcome'); // welcome | speaking | listening | results
   const [speakingResults, setSpeakingResults] = useState([]);
   const [listeningResults, setListeningResults] = useState(null);
+  const [interviewId, setInterviewId] = useState(null);
 
   const handleStart = () => {
     setPhase('speaking');
@@ -28,13 +29,26 @@ function App() {
     setPhase('welcome');
     setSpeakingResults([]);
     setListeningResults(null);
+    setInterviewId(null);
   };
 
   return (
     <div className="app">
       {phase === 'welcome' && <Welcome onStart={handleStart} />}
-      {phase === 'speaking' && <Speaking onComplete={handleSpeakingComplete} />}
-      {phase === 'listening' && <Listening onComplete={handleListeningComplete} />}
+      {phase === 'speaking' && (
+        <Speaking 
+          interviewId={interviewId} 
+          setInterviewId={setInterviewId} 
+          onComplete={handleSpeakingComplete} 
+        />
+      )}
+      {phase === 'listening' && (
+        <Listening 
+          interviewId={interviewId} 
+          setInterviewId={setInterviewId} 
+          onComplete={handleListeningComplete} 
+        />
+      )}
       {phase === 'results' && (
         <Results 
           speakingResults={speakingResults} 
