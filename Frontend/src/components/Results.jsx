@@ -69,7 +69,7 @@ export default function Results({ speakingResults, listeningResults, onRestart }
   const listeningParamsList = [
     { key: 'listening_accuracy', label: 'Accuracy' },
     { key: 'retention', label: 'Retention' },
-    { key: 'sentence_reconstruction', label: 'Sentence Reconstruction' }
+    { key: 'comprehension', label: 'Comprehension' }
   ];
 
   const listeningParamScores = listeningParamsList.map(param => {

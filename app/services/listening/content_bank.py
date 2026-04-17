@@ -72,16 +72,15 @@ def _fetch_random_clips(task_type: str, count: int) -> list[ListeningClip]:
 
 def get_session_clips(seed: int = None) -> list[ListeningClip]:
     """
-    Pick 2 REPEAT + 2 QnA clips randomly for this session.
+    Pick 4 QnA clips randomly for this session.
     Returns them as clip_1..clip_4 (sequential IDs for the session).
     Each call gives a different combination without repetition.
     """
     if seed is not None:
         random.seed(seed)
 
-    repeat_clips = _fetch_random_clips("REPEAT", 2)
-    qna_clips    = _fetch_random_clips("QnA", 2)
-    picks        = repeat_clips + qna_clips
+    qna_clips = _fetch_random_clips("QnA", 4)
+    picks     = qna_clips
 
     session = []
     for i, clip in enumerate(picks, start=1):

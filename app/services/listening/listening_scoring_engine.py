@@ -19,7 +19,7 @@ Listening weights:
 PARAM_WEIGHTS = {
     "listening_accuracy":      0.40,
     "retention":               0.30,
-    "sentence_reconstruction": 0.30,
+    "comprehension":           0.30,
 }
 MAX_SUB = 2.0
 
@@ -66,17 +66,12 @@ def _retention_to_01(param: dict) -> float:
     return max(0.0, min(1.0, llm_base))
 
 
-def _reconstruction_to_01(param: dict) -> float:
+def _comprehension_to_01(param: dict) -> float:
     """
     Inputs:
       score                → LLM integer 0–2
-      structure_similarity → edit-distance based 0–1
     """
     llm_base  = param.get("score", 1) / 2.0
-    sim       = param.get("structure_similarity", None)
-
-    if sim is not None:
-        return max(0.0, min(1.0, llm_base * 0.60 + float(sim) * 0.40))
     return max(0.0, min(1.0, llm_base))
 
 
@@ -102,8 +97,10 @@ def _strengths(avgs_01: dict) -> list:
         out.append("Strong ability to retain and recall full sentences")
     elif avgs_01.get("retention", 0) >= 0.45:
         out.append("Retains most of the spoken content")
-    if avgs_01.get("sentence_reconstruction", 0) >= 0.70:
-        out.append("Maintains accurate sentence structure when repeating")
+    if avgs_01.get("comprehension", 0) >= 0.70:
+        out.append("Demonstrates excellent understanding of complex questions")
+    elif avgs_01.get("comprehension", 0) >= 0.45:
+        out.append("Generally grasps the context of the audio passages")
     return out[:4] if out else ["Attempted all listening tasks"]
 
 
@@ -117,10 +114,10 @@ def _improvements(avgs_01: dict) -> list:
         out.append("Practise recalling complete sentences rather than fragments")
     elif avgs_01.get("retention", 1) < 0.65:
         out.append("Work on retaining the full content of longer passages")
-    if avgs_01.get("sentence_reconstruction", 1) < 0.40:
-        out.append("Maintain correct word order when reconstructing sentences")
-    elif avgs_01.get("sentence_reconstruction", 1) < 0.65:
-        out.append("Aim to reproduce sentence structure more precisely")
+    if avgs_01.get("comprehension", 1) < 0.40:
+        out.append("Focus on understanding the overall context rather than just facts")
+    elif avgs_01.get("comprehension", 1) < 0.65:
+        out.append("Try to improve contextual understanding of spoken narratives")
     return out[:4] if out else ["Continue practising listening exercises"]
 
 
@@ -142,22 +139,17 @@ def aggregate_listening_scores(clip_results: list) -> dict:
     converters = {
         "listening_accuracy":      _accuracy_to_01,
         "retention":               _retention_to_01,
-        "sentence_reconstruction": _reconstruction_to_01,
+        "comprehension":           _comprehension_to_01,
     }
 
     for clip in clip_results:
-        task_type = clip.get("task_type", "") if isinstance(clip, dict) else ""
         if not isinstance(clip, dict) or "error" in clip:
             param_01["listening_accuracy"].append(0.0)
             param_01["retention"].append(0.0)
-            if task_type == "REPEAT":
-                param_01["sentence_reconstruction"].append(0.0)
+            param_01["comprehension"].append(0.0)
             continue
             
         for param, fn in converters.items():
-            if param == "sentence_reconstruction" and task_type != "REPEAT":
-                continue
-                
             raw = clip.get(param)
             if isinstance(raw, dict) and "score" in raw:
                 param_01[param].append(fn(raw))

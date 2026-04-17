@@ -47,7 +47,6 @@ export default function Listening({ interviewId, setInterviewId, onComplete }) {
   }, []);
 
   const currentClip = session?.clips[currentIndex];
-  const isQnA = currentClip?.task_type === 'QnA';
 
   const handleAudioEnded = () => {
     setPhase('prep');
@@ -57,10 +56,7 @@ export default function Listening({ interviewId, setInterviewId, onComplete }) {
   const handleStopAndSubmit = async () => {
     const blob = await stopRecording();
     
-    let key = currentClip.clip_id;
-    if (currentClip.task_type === 'QnA') {
-      key = `${currentClip.clip_id}_q1`;
-    }
+    let key = `${currentClip.clip_id}_q1`;
     
     setRecordings((prev) => ({ ...prev, [key]: blob }));
     setPhase('review');
@@ -120,9 +116,7 @@ export default function Listening({ interviewId, setInterviewId, onComplete }) {
           <div className="listening__type-info">
             <span className="badge badge-primary">{currentClip?.task_type} Task</span>
             <p className="text-secondary mt-1">
-              {currentClip?.task_type === 'REPEAT' 
-                ? 'Listen carefully and repeat the sentences exactly as you hear them.' 
-                : 'Listen to the passage and answer the question that follows.'}
+              Listen to the passage and answer the question that follows.
             </p>
           </div>
 
@@ -135,7 +129,7 @@ export default function Listening({ interviewId, setInterviewId, onComplete }) {
             )}
           </div>
 
-          {isQnA && phase !== 'play' && (
+          {phase !== 'play' && (
             <div className="listening__question-box animate-fade-in mt-4">
               <span className="listening__q-label">Question:</span>
               <p className="listening__question">{currentClip.questions[0]}</p>

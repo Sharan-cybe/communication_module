@@ -12,7 +12,7 @@ first and is passed into the single LLM call as anchors — same accuracy as bef
 Parameters:
   1. listening_accuracy       — correct content captured?      (keyword + LLM)
   2. retention                — how complete was the recall?   (coverage ratio + LLM)
-  3. sentence_reconstruction  — grammatical structure?         (edit-distance + LLM, REPEAT only)
+  3. comprehension            — did they understand the context? (LLM)
 """
 
 import re
@@ -136,7 +136,7 @@ def _llm(prompt: str, max_tokens: int = 1000) -> dict:
 COMBINED_LISTENING_PROMPT = """You are a listening comprehension evaluator. Evaluate ALL clips in a single pass using the pre-computed signals provided as anchors.
 
 SCORING RULES:
-- Use the pre-computed signals (keyword_hit_rate, token_coverage, structure_similarity) as primary anchors
+- Use the pre-computed signals (keyword_hit_rate, fact_coverage) as primary anchors
 - Only override if you detect clear semantic mismatch the numbers cannot capture
 - Bias TOWARDS higher scores when in doubt — do NOT be overly strict
 
@@ -152,10 +152,10 @@ RETENTION:
   1 = 30–69% — roughly half recalled
   0 = <30% — major portions missing
 
-SENTENCE RECONSTRUCTION (REPEAT clips only):
-  2 = ≥70% structure similarity — matches original pattern well
-  1 = 40–69% — mostly correct with notable structural differences
-  0 = <40% — broken structure or fragments
+COMPREHENSION:
+  2 = Excellent understanding of the question and its relation to the reference passage
+  1 = Partial understanding; answer is somewhat relevant but misses the core implication
+  0 = Completely misses the point of the question, or no answer
 
 ---
 
@@ -170,27 +170,26 @@ Return ONLY valid JSON — no markdown, no explanation:
 {{
   "clips": [
     {{
+    {
       "clip_id": "<clip_id>",
       "task_type": "<REPEAT|QnA>",
-      "listening_accuracy": {{
+      "listening_accuracy": {
         "score": <0|1|2>,
         "note": "<max 15 words>"
-      }},
-      "retention": {{
+      },
+      "retention": {
         "score": <0|1|2>,
         "note": "<max 15 words>"
-      }},
-      "sentence_reconstruction": {{
+      },
+      "comprehension": {
         "score": <0|1|2>,
         "note": "<max 15 words>"
-      }}
-    }}
+      }
+    }
   ]
-}}
+}
 
-For QnA clips, sentence_reconstruction score must be null (not evaluated).
-For each QnA clip, listening_accuracy and retention scores should reflect the quality of the answer to the provided question.
-Return one object per clip in the same order as the input.
+For each QnA clip, listening_accuracy, retention, and comprehension scores should reflect the quality of the answer to the provided question. Output one object per clip in the same order as the input.
 """
 
 
@@ -273,7 +272,7 @@ def evaluate_all_responses(session_clips: list, clip_responses: list) -> list:
                     "transcript":             transcript,
                     "listening_accuracy":     {**EMPTY_PENALTY, "keyword_hit_rate": 0.0},
                     "retention":              {**EMPTY_PENALTY, "coverage_ratio": 0.0},
-                    "sentence_reconstruction":{**EMPTY_PENALTY, "structure_similarity": 0.0},
+                    "comprehension":          {**EMPTY_PENALTY},
                 }
                 print(f"[{clip_id}] REPEAT — empty transcript, all params scored 0")
                 continue
@@ -305,6 +304,8 @@ def evaluate_all_responses(session_clips: list, clip_responses: list) -> list:
                     "listening_accuracy": {**EMPTY_PENALTY, "q1": EMPTY_PENALTY,
                                            "score": 0},
                     "retention":          {**EMPTY_PENALTY, "q1": EMPTY_PENALTY,
+                                           "score": 0},
+                    "comprehension":      {**EMPTY_PENALTY, "q1": EMPTY_PENALTY,
                                            "score": 0},
                 }
                 continue
@@ -388,22 +389,18 @@ def evaluate_all_responses(session_clips: list, clip_responses: list) -> list:
                 "note":           ret_llm.get("note", ""),
             }
 
-            # Sentence reconstruction
-            rec_llm  = llm.get("sentence_reconstruction", {})
-            rec_score = _anchored_score(
-                llm_score  = rec_llm.get("score"),
-                signal_val = sigs.get("structure_similarity", 0.5),
-                low=0.45, high=0.80,
-            )
-            result["sentence_reconstruction"] = {
-                "score":                rec_score,
-                "structure_similarity": sigs.get("structure_similarity", 0.0),
-                "note":                 rec_llm.get("note", ""),
+            # Comprehension
+            comp_llm  = llm.get("comprehension", {})
+            comp_score = _safe_score(comp_llm.get("score"), default=1)
+            
+            result["comprehension"] = {
+                "score": comp_score,
+                "note":  comp_llm.get("note", ""),
             }
 
             print(
                 f"[{clip_id}] REPEAT | "
-                f"accuracy={acc_score} retention={ret_score} reconstruction={rec_score}"
+                f"accuracy={acc_score} retention={ret_score} comprehension={comp_score}"
             )
 
         elif clip and clip.task_type == "QnA":
@@ -414,16 +411,19 @@ def evaluate_all_responses(session_clips: list, clip_responses: list) -> list:
             q1_sigs = sigs.get("q1", {})
 
             # Per-question accuracy and retention (from LLM aggregate)
-            acc_llm  = llm.get("listening_accuracy", {})
-            ret_llm  = llm.get("retention", {})
+            acc_llm   = llm.get("listening_accuracy", {})
+            ret_llm   = llm.get("retention", {})
+            comp_llm  = llm.get("comprehension", {})
 
-            acc_score = _safe_score(acc_llm.get("score"), default=1)
-            ret_score = _safe_score(ret_llm.get("score"), default=1)
+            acc_score  = _safe_score(acc_llm.get("score"), default=1)
+            ret_score  = _safe_score(ret_llm.get("score"), default=1)
+            comp_score = _safe_score(comp_llm.get("score"), default=1)
 
             # Override with 0 if both answers penalised
             if q1_sigs.get("flagged_as_repeat"):
-                acc_score = 0
-                ret_score = 0
+                acc_score  = 0
+                ret_score  = 0
+                comp_score = 0
 
             result["reference_text"] = clip.reference_text
             result["transcript"] = a1
@@ -445,9 +445,13 @@ def evaluate_all_responses(session_clips: list, clip_responses: list) -> list:
                 "score": ret_score,
                 "note":  ret_llm.get("note", ""),
             }
+            result["comprehension"] = {
+                "score": comp_score,
+                "note":  comp_llm.get("note", ""),
+            }
 
             print(
-                f"[{clip_id}] QnA | accuracy={acc_score} retention={ret_score} | "
+                f"[{clip_id}] QnA | accuracy={acc_score} retention={ret_score} comprehension={comp_score} | "
                 f"expected_facts: {kf1}"
             )
 

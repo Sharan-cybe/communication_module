@@ -97,20 +97,17 @@ export async function submitListeningResponse(audioBlob, sessionId, clipId, ques
 /**
  * Submit all listening responses at once
  * @param {string} sessionId
- * @param {Object} recordings Mapping of clip ID to blobs { "clip_1": blob, "clip_3_q1": blob, etc }
+ * @param {Object} recordings Mapping of clip ID to blobs { "clip_1": blob, "clip_2": blob, etc }
  */
 export async function submitListeningAllResponses(sessionId, recordings) {
   const form = new FormData();
   form.append('session_id', sessionId);
   
-  // REPEAT clips
-  if (recordings['clip_1']) form.append('clip_1_audio', recordings['clip_1'], 'clip_1.wav');
-  if (recordings['clip_2']) form.append('clip_2_audio', recordings['clip_2'], 'clip_2.wav');
-  // QnA clips
+  // 4 QnA clips
+  if (recordings['clip_1_q1']) form.append('clip_1_q1', recordings['clip_1_q1'], 'c1q1.wav');
+  if (recordings['clip_2_q1']) form.append('clip_2_q1', recordings['clip_2_q1'], 'c2q1.wav');
   if (recordings['clip_3_q1']) form.append('clip_3_q1', recordings['clip_3_q1'], 'c3q1.wav');
-  if (recordings['clip_3_q2']) form.append('clip_3_q2', recordings['clip_3_q2'], 'c3q2.wav');
   if (recordings['clip_4_q1']) form.append('clip_4_q1', recordings['clip_4_q1'], 'c4q1.wav');
-  if (recordings['clip_4_q2']) form.append('clip_4_q2', recordings['clip_4_q2'], 'c4q2.wav');
 
   const res = await fetch(`${API_BASE}/listening/respond_all`, {
     method: 'POST',

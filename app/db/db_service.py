@@ -124,7 +124,7 @@ def save_listening_clip_result(session_id: str, clip_result: dict, interview_id:
             "transcript":               clip_result.get("transcript", ""),
             "listening_accuracy":       clip_result.get("listening_accuracy", {}),
             "retention":                clip_result.get("retention", {}),
-            "sentence_reconstruction":  clip_result.get("sentence_reconstruction", {}),
+            "comprehension":            clip_result.get("comprehension", {}),
             "answers":                  clip_result.get("answers", {}),
             "key_facts":                clip_result.get("key_facts", []),
         }

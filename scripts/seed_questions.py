@@ -10,12 +10,12 @@ import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from app.db.supabase_client import supabase
-from scripts.seed_data import REPEAT_CLIPS, QNA_CLIPS, SPEAKING_QUESTIONS
+from scripts.seed_data import ALL_CLIPS, SPEAKING_QUESTIONS
 
 
 def seed_listening_clips():
-    """Insert all REPEAT + QnA clips into listening_clips table."""
-    all_clips = REPEAT_CLIPS + QNA_CLIPS
+    """Insert all QnA clips into listening_clips table."""
+    all_clips = ALL_CLIPS
     print(f"Seeding {len(all_clips)} listening clips...")
 
     for i in range(0, len(all_clips), 50):
